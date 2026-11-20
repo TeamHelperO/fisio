@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>FisioGestão — Apresentação</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Layout: slides 16:9, faixa lateral escura como a barra do app, conteúdo em fundo claro */
+  :root {
+    --ink: #13232b; --muted: #5b6d77; --line: #dbe3e6; --bg: #f4f6f7; --paper: #ffffff;
+    --deep: #0f2a2f; --teal: #0f766e; --mint: #2dd4bf; --mint-50: #e6f5f2; --amber: #b45309; --amber-50: #fff6e5;
+    --display: "Plus Jakarta Sans", "Segoe UI", system-ui, sans-serif;
+    --body: "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  @page { size: 13.333in 7.5in; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #cfd8dc; }
+  body { font-family: var(--body); color: var(--ink); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .slide { width: 13.333in; height: 7.5in; position: relative; overflow: hidden; background: var(--bg); page-break-after: always; break-after: page; margin: 0 auto 24px; display: flex; flex-direction: column; padding: 0.62in 0.75in 0.55in; }
+  @media print { html, body { background: none; } .slide { margin: 0; } }
+  h1, h2, h3 { font-family: var(--display); margin: 0; letter-spacing: -0.02em; text-wrap: balance; }
+  h2 { font-size: 34px; line-height: 1.12; font-weight: 800; }
+  h3 { font-size: 18px; font-weight: 700; }
+  p { margin: 0; }
+  .eyebrow { font-family: var(--display); font-size: 13px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--teal); margin-bottom: 10px; }
+  .lead { font-size: 17px; line-height: 1.55; color: var(--muted); max-width: 46ch; }
+  .foot { position: absolute; left: 0.75in; right: 0.75in; bottom: 0.28in; display: flex; justify-content: space-between; font-size: 11px; color: #8a9aa2; }
+  .foot b { color: var(--teal); font-family: var(--display); }
+  .row { display: flex; gap: 0.45in; flex: 1; min-height: 0; margin-top: 0.3in; }
+  .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .shot { border-radius: 12px; overflow: hidden; box-shadow: 0 18px 40px rgba(15, 42, 47, 0.18), 0 2px 6px rgba(15, 42, 47, 0.08); border: 1px solid #d3dde1; background: #fff; }
+  .shot img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+  ul.ticks { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+  ul.ticks li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; font-size: 15.5px; line-height: 1.45; }
+  ul.ticks li::before { content: ""; width: 18px; height: 18px; margin-top: 2px; border-radius: 50%; background: var(--mint-50) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230f766e' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center/11px no-repeat; }
+  ul.ticks b { font-weight: 600; }
+
+  /* Capa */
+  .cover { background: var(--deep); color: #d9ecea; padding: 0.8in 0.85in; }
+  .cover .brand { display: flex; align-items: center; gap: 12px; font-family: var(--display); font-weight: 700; color: #fff; font-size: 20px; }
+  .mark { width: 42px; height: 42px; border-radius: 11px; background: linear-gradient(135deg, #14b8a6, #0f766e); display: grid; place-items: center; }
+  .cover h1 { font-size: 52px; line-height: 1.06; color: #fff; font-weight: 800; max-width: 5.7in; margin-top: 0.75in; position: relative; z-index: 2; }
+  .cover h1 em { font-style: normal; color: var(--mint); }
+  .cover .lead { color: #9fc3c0; font-size: 19px; margin-top: 22px; max-width: 5.6in; }
+  .cover .shot { position: absolute; right: -1.6in; top: 1.25in; width: 7.4in; height: 4.6in; transform: rotate(-4deg); border: 1px solid rgba(255,255,255,.12); box-shadow: 0 30px 70px rgba(0,0,0,.45); }
+  .cover .chips { position: absolute; left: 0.85in; bottom: 0.7in; display: flex; gap: 10px; }
+  .chip { font-size: 13px; padding: 7px 13px; border-radius: 999px; border: 1px solid rgba(45, 212, 191, .35); color: #bfe6e1; }
+
+  /* Problema */
+  .pains { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-top: 0.45in; }
+  .pain { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 22px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .pain .ic { width: 40px; height: 40px; border-radius: 10px; background: var(--amber-50); color: var(--amber); display: grid; place-items: center; }
+  .pain p { font-size: 14.5px; line-height: 1.5; color: var(--muted); }
+  .answer { margin-top: auto; margin-bottom: 0.2in; background: var(--deep); color: #d9ecea; border-radius: 14px; padding: 22px 26px; display: flex; align-items: center; gap: 18px; font-size: 17px; }
+  .answer b { color: #fff; font-family: var(--display); font-size: 20px; }
+
+  /* Fluxo */
+  .flow { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; margin-top: 0.55in; position: relative; }
+  .flow::before { content: ""; position: absolute; left: 8%; right: 8%; top: 30px; height: 2px; background: linear-gradient(90deg, var(--teal), var(--mint)); }
+  .step { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; padding: 0 10px; position: relative; }
+  .step .n { width: 60px; height: 60px; border-radius: 50%; background: var(--paper); border: 2px solid var(--teal); display: grid; place-items: center; font-family: var(--display); font-weight: 800; font-size: 20px; color: var(--teal); }
+  .step h3 { font-size: 17px; }
+  .step p { font-size: 13.5px; line-height: 1.45; color: var(--muted); }
+
+  /* Áreas */
+  .areas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .area { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px; }
+  .area b { font-family: var(--display); font-size: 14.5px; display: block; }
+  .area span { font-size: 12px; color: var(--muted); line-height: 1.35; display: block; margin-top: 3px; }
+  .area.hl { background: var(--deep); border-color: var(--deep); }
+  .area.hl b { color: #fff; } .area.hl span { color: #9fc3c0; }
+
+  .callout { background: var(--mint-50); border-radius: 12px; padding: 16px 18px; font-size: 14.5px; line-height: 1.5; color: #134e48; }
+  .quote { font-family: var(--display); font-size: 20px; line-height: 1.35; font-weight: 600; color: var(--ink); border-left: 4px solid var(--mint); padding-left: 16px; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+  .card h3 { margin-bottom: 8px; }
+  .card p { font-size: 14px; line-height: 1.5; color: var(--muted); }
+  .roles { display: grid; gap: 10px; }
+  .role { display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: baseline; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 14.5px; }
+  .role:last-child { border-bottom: 0; }
+  .role b { font-family: var(--display); }
+
+  /* Encerramento */
+  .end { background: var(--deep); color: #d9ecea; justify-content: center; }
+  .end h2 { color: #fff; font-size: 44px; }
+  .end .eyebrow { color: var(--mint); }
+  .link { margin-top: 26px; font-family: var(--display); font-weight: 700; font-size: 22px; color: var(--mint); word-break: break-all; }
+  .creds { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 30px; }
+  .cred { border: 1px solid rgba(45, 212, 191, .3); border-radius: 12px; padding: 16px 18px; }
+  .cred b { display: block; color: #fff; font-family: var(--display); font-size: 16px; }
+  .cred code { font-size: 14px; color: #9fe9dd; }
+  .cred small { display: block; color: #8fb3b0; font-size: 12.5px; margin-top: 6px; }
+  .end .foot { color: #6f9894; }
+  /* pré-visualização de um slide: apresentacao.html#s5 */
+  body:has(.slide:target) .slide:not(:target) { display: none; }
+  body:has(.slide:target) .slide { margin: 0; }
+</style>
+</head>
+<body>
+
+<!-- 1. Capa -->
+<section id="s1" class="slide cover">
+  <div class="brand"><span class="mark"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>FisioGestão</div>
+  <h1>Do primeiro contato <em>à alta</em>, o prontuário inteiro em um só lugar.</h1>
+  <p class="lead">Prontuário eletrônico, agenda e financeiro para fisioterapeutas autônomos e clínicas.</p>
+  <div class="shot"><img src="img/dashboard.png" alt="Painel inicial do FisioGestão"></div>
+  <div class="chips"><span class="chip">12 áreas de atuação</span><span class="chip">Adequado à LGPD</span><span class="chip">Computador, tablet e celular</span></div>
+</section>
+
+<!-- 2. O problema -->
+<section id="s2" class="slide">
+  <div class="eyebrow">O dia a dia hoje</div>
+  <h2>A informação do paciente vive espalhada.</h2>
+  <div class="pains">
+    <div class="pain"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6"/></svg></span><h3>Fichas em papel</h3><p>Avaliações e evoluções em pastas, difíceis de comparar entre sessões.</p></div>
+    <div class="pain"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg></span><h3>Agenda no WhatsApp</h3><p>Faltas e remarcações sem registro, horários conflitando.</p></div>
+    <div class="pain"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4M3 5v14a2 2 0 0 0 2 2h16v-5M18 12a2 2 0 0 0 0 4h4v-4z"/></svg></span><h3>Financeiro na planilha</h3><p>Quem pagou, quem deve, recibos e Carnê-Leão montados à mão.</p></div>
+    <div class="pain"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span><h3>LGPD sem controle</h3><p>Dados de saúde são sensíveis e exigem consentimento, acesso restrito e registro.</p></div>
+  </div>
+  <div class="answer"><b>FisioGestão</b><span>Um sistema que acompanha o paciente do cadastro à alta, com o financeiro e a privacidade resolvidos junto.</span></div>
+  <div class="foot"><b>FisioGestão</b><span>2</span></div>
+</section>
+
+<!-- 3. Fluxo -->
+<section id="s3" class="slide">
+  <div class="eyebrow">Como funciona</div>
+  <h2>Cada etapa do atendimento, na ordem em que acontece.</h2>
+  <div class="flow">
+    <div class="step"><span class="n">1</span><h3>Cadastro</h3><p>Dados pessoais, contato de emergência e consentimento LGPD.</p></div>
+    <div class="step"><span class="n">2</span><h3>Anamnese</h3><p>Diagnóstico médico, queixa, HDA, histórico, medicamentos e hábitos.</p></div>
+    <div class="step"><span class="n">3</span><h3>Avaliação</h3><p>Ficha geral + ficha específica da área de atuação.</p></div>
+    <div class="step"><span class="n">4</span><h3>Plano</h3><p>Objetivos, condutas, técnicas, frequência e critérios de reavaliação.</p></div>
+    <div class="step"><span class="n">5</span><h3>Evolução</h3><p>Registro de cada sessão, gráfico de dor e comparação entre sessões.</p></div>
+    <div class="step"><span class="n">6</span><h3>Financeiro</h3><p>Cobrança automática, pagamento, recibo e Carnê-Leão.</p></div>
+  </div>
+  <div class="row" style="margin-top:0.75in; flex:0; align-items:flex-start">
+    <div class="col" style="flex:1"><p class="quote">Tudo fica no prontuário do paciente, com data, autor e histórico de cada alteração.</p></div>
+    <div class="col" style="flex:1"><p class="lead">A agenda gera a cobrança quando o atendimento é marcado como realizado, e os documentos saem prontos em PDF a partir dos registros.</p></div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>3</span></div>
+</section>
+
+<!-- 4. Dashboard -->
+<section id="s4" class="slide">
+  <div class="row" style="margin-top:0">
+    <div class="col" style="flex:0 0 3.6in; justify-content:center">
+      <div class="eyebrow">Painel inicial</div>
+      <h2>O consultório inteiro em uma tela.</h2>
+      <ul class="ticks" style="margin-top:14px">
+        <li><span><b>Pacientes</b> cadastrados, em tratamento e com alta</span></li>
+        <li><span><b>Consultas agendadas</b> e atendimentos do mês</span></li>
+        <li><span><b>Faturamento</b> e pagamentos pendentes ou vencidos</span></li>
+        <li><span><b>Próximos atendimentos</b> agrupados por dia</span></li>
+      </ul>
+    </div>
+    <div class="col" style="flex:1"><div class="shot" style="height:100%"><img src="img/dashboard.png" alt="Painel"></div></div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>4</span></div>
+</section>
+
+<!-- 5. Áreas -->
+<section id="s5" class="slide">
+  <div class="eyebrow">Fichas por área de atuação</div>
+  <h2>Uma ficha para cada especialidade da fisioterapia.</h2>
+  <div class="row" style="margin-top:0.35in">
+    <div class="col" style="flex:1.45">
+      <div class="areas">
+        <div class="area hl"><b>Respiratória</b><span>Tosse eficaz/ineficaz, secreção, ausculta, SpO₂, Borg, PImáx</span></div>
+        <div class="area"><b>Traumato-ortopédica</b><span>Goniometria, testes especiais, descarga de peso</span></div>
+        <div class="area"><b>Neurofuncional</b><span>Ashworth, controle de tronco, Berg, TUG, Barthel</span></div>
+        <div class="area"><b>Cardiovascular</b><span>PA, FC, NYHA, fração de ejeção, zona de treino</span></div>
+        <div class="area"><b>Pediátrica / neonatal</b><span>Apgar, marcos motores, AIMS, GMFCS</span></div>
+        <div class="area"><b>Gerontológica</b><span>Quedas, Katz, Lawton, sarcopenia, riscos no domicílio</span></div>
+        <div class="area"><b>Esportiva</b><span>Hop tests, simetria entre membros, retorno ao esporte</span></div>
+        <div class="area"><b>Saúde da mulher / pélvica</b><span>Incontinência, Oxford, PERFECT, ICIQ-SF</span></div>
+        <div class="area"><b>Dermatofuncional</b><span>Pós-operatório, linfedema, cicatriz (Vancouver)</span></div>
+        <div class="area"><b>Reumatológica</b><span>Rigidez matinal, articulações, atividade da doença</span></div>
+        <div class="area"><b>Oncológica</b><span>ECOG, linfedema, neuropatia, exames do dia</span></div>
+        <div class="area"><b>Terapia intensiva</b><span>Ventilação, gasometria, MRC, nível de mobilização</span></div>
+      </div>
+    </div>
+    <div class="col" style="flex:1; justify-content:center">
+      <p class="lead">O profissional escolhe a área na avaliação e a ficha específica é acrescentada aos campos gerais. As evoluções seguintes do paciente já abrem com os campos da mesma área.</p>
+      <div class="callout">Campos em branco não aparecem no prontuário nem no PDF. O registro fica tão completo quanto o caso exige.</div>
+    </div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>5</span></div>
+</section>
+
+<!-- 6. Exemplo respiratório -->
+<section id="s6" class="slide">
+  <div class="row" style="margin-top:0">
+    <div class="col" style="flex:0 0 3.7in; justify-content:center">
+      <div class="eyebrow">Exemplo · área respiratória</div>
+      <h2>A tosse é eficaz? Como está a secreção?</h2>
+      <p class="lead" style="margin-top:6px">Paciente com DPOC: a avaliação registra ausculta, tosse e as características da secreção, e cada sessão acompanha a mudança.</p>
+      <ul class="ticks" style="margin-top:6px">
+        <li><span>Tosse <b>presente/ausente, eficaz/ineficaz, produtiva/seca</b></span></li>
+        <li><span>Secreção: <b>quantidade, aspecto, cor e viscosidade</b></span></li>
+        <li><span>Ruídos adventícios e localização</span></li>
+        <li><span>FR, SpO₂, oxigenoterapia, mMRC, Borg, TC6</span></li>
+      </ul>
+    </div>
+    <div class="col" style="flex:1"><div class="shot crop" style="height:100%; position:relative"><img src="img/avaliacao-resp.png" alt="Avaliação respiratória: ausculta, tosse e secreção" style="position:absolute; width:909px; height:auto; max-width:none; left:-157px; top:-681px; object-fit:fill"></div></div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>6</span></div>
+</section>
+
+<!-- 7. Evolução -->
+<section id="s7" class="slide">
+  <div class="row" style="margin-top:0">
+    <div class="col" style="flex:1"><div class="shot" style="height:100%"><img src="img/evolucoes.png" alt="Evoluções com gráfico de dor"></div></div>
+    <div class="col" style="flex:0 0 3.6in; justify-content:center">
+      <div class="eyebrow">Evolução das sessões</div>
+      <h2>Veja o progresso, não só o registro.</h2>
+      <ul class="ticks" style="margin-top:14px">
+        <li><span><b>Gráfico da dor (EVA)</b> no início e no fim de cada sessão</span></li>
+        <li><span><b>Comparação lado a lado</b> de até 4 sessões</span></li>
+        <li><span><b>Copiar a conduta</b> da sessão anterior em um clique</span></li>
+        <li><span><b>Histórico de versões</b>: toda edição preserva o texto anterior</span></li>
+      </ul>
+    </div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>7</span></div>
+</section>
+
+<!-- 8. Agenda -->
+<section id="s8" class="slide">
+  <div class="row" style="margin-top:0">
+    <div class="col" style="flex:0 0 3.6in; justify-content:center">
+      <div class="eyebrow">Agenda</div>
+      <h2>Dia, semana e mês, com faltas registradas.</h2>
+      <ul class="ticks" style="margin-top:14px">
+        <li><span>Agendamento <b>recorrente</b> semanal</span></li>
+        <li><span>Aviso de <b>conflito de horário</b></span></li>
+        <li><span>Situações: agendado, confirmado, realizado, falta, cancelado</span></li>
+        <li><span>Atendimento realizado <b>gera a cobrança</b> automaticamente</span></li>
+      </ul>
+    </div>
+    <div class="col" style="flex:1"><div class="shot" style="height:100%"><img src="img/agenda.png" alt="Agenda semanal"></div></div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>8</span></div>
+</section>
+
+<!-- 9. Financeiro -->
+<section id="s9" class="slide">
+  <div class="eyebrow">Financeiro</div>
+  <h2>Separado do prontuário, ligado ao atendimento.</h2>
+  <div class="row" style="margin-top:0.3in">
+    <div class="col" style="flex:1"><div class="shot" style="flex:1"><img src="img/financeiro.png" alt="Lançamentos financeiros"></div>
+      <p style="font-size:14px;color:var(--muted)"><b style="color:var(--ink)">Valores e pacotes mensais</b>, pagamentos por PIX, dinheiro, cartão ou transferência, pendências e relatório de receitas.</p></div>
+    <div class="col" style="flex:1"><div class="shot" style="flex:1"><img src="img/carneleao.png" alt="Carnê-Leão"></div>
+      <p style="font-size:14px;color:var(--muted)"><b style="color:var(--ink)">Carnê-Leão organizado</b>: receitas por mês, paciente, pagador e CPF, exportáveis em planilha. O sistema não calcula imposto.</p></div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>9</span></div>
+</section>
+
+<!-- 10. Documentos -->
+<section id="s10" class="slide">
+  <div class="row" style="margin-top:0">
+    <div class="col" style="flex:0 0 3.7in; justify-content:center">
+      <div class="eyebrow">Documentos em PDF</div>
+      <h2>Prontos para assinar.</h2>
+      <p class="lead" style="margin-top:6px">Identificação do profissional e do paciente, data e espaço para assinatura em todos.</p>
+      <ul class="ticks" style="margin-top:6px">
+        <li><span>Anamnese, avaliação e plano de tratamento</span></li>
+        <li><span>Evolução das sessões e prontuário completo</span></li>
+        <li><span>Relatório de acompanhamento</span></li>
+        <li><span>Recibo numerado com valor por extenso</span></li>
+        <li><span>Termo de consentimento LGPD</span></li>
+      </ul>
+    </div>
+    <div class="col" style="flex:1; flex-direction:row; gap:18px">
+      <div class="shot" style="flex:1"><img src="img/relatorio.png" alt="Relatório de acompanhamento" style="object-position: 50% 0"></div>
+      <div class="shot" style="flex:1"><img src="img/recibo.png" alt="Recibo" style="object-position: 50% 0"></div>
+    </div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>10</span></div>
+</section>
+
+<!-- 11. Segurança -->
+<section id="s11" class="slide">
+  <div class="eyebrow">Segurança e LGPD</div>
+  <h2>Dado de saúde é dado sensível. O sistema trata como tal.</h2>
+  <div class="row" style="margin-top:0.35in">
+    <div class="col" style="flex:1.1">
+      <div class="grid2">
+        <div class="card"><h3>Login individual</h3><p>Senha protegida, bloqueio após tentativas erradas e sessão que expira.</p></div>
+        <div class="card"><h3>Registros criptografados</h3><p>Anamneses, avaliações, planos e evoluções ficam cifrados no banco.</p></div>
+        <div class="card"><h3>Registro de alterações</h3><p>Quem acessou, alterou ou excluiu, e quando. Versões anteriores preservadas.</p></div>
+        <div class="card"><h3>Consentimento do titular</h3><p>Termo imprimível, registro, revogação e exportação dos dados do paciente.</p></div>
+      </div>
+    </div>
+    <div class="col" style="flex:1">
+      <h3>Perfis de acesso</h3>
+      <div class="roles">
+        <div class="role"><b>Administrador</b><span>Acesso total, usuários, backup e auditoria</span></div>
+        <div class="role"><b>Fisioterapeuta</b><span>Prontuários dos próprios pacientes, agenda e financeiro</span></div>
+        <div class="role"><b>Recepção</b><span>Cadastro, agenda e financeiro, sem dados clínicos</span></div>
+      </div>
+      <div class="callout" style="margin-top:18px">Backup automático diário e cópia de segurança antes de qualquer exclusão de paciente.</div>
+    </div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>11</span></div>
+</section>
+
+<!-- 12. Celular -->
+<section id="s12" class="slide">
+  <div class="row" style="margin-top:0">
+    <div class="col" style="flex:0 0 4.4in; justify-content:center">
+      <div class="eyebrow">Computador, tablet e celular</div>
+      <h2>Registre a evolução ao lado do paciente.</h2>
+      <p class="lead" style="margin-top:8px">A mesma tela se adapta ao celular e ao tablet, com menu lateral recolhível. Útil no atendimento domiciliar e no hospital.</p>
+    </div>
+    <div class="col" style="flex:1; flex-direction:row; gap:28px; justify-content:center; align-items:center">
+      <div class="shot" style="width:2.55in; height:5.1in; border-radius:26px; border:8px solid var(--deep)"><img src="img/mobile.png" alt="Painel no celular"></div>
+      <div class="shot" style="width:2.55in; height:5.1in; border-radius:26px; border:8px solid var(--deep)"><img src="img/mobile-evo.png" alt="Evolução no celular"></div>
+    </div>
+  </div>
+  <div class="foot"><b>FisioGestão</b><span>12</span></div>
+</section>
+
+<!-- 13. Experimente -->
+<section id="s13" class="slide end">
+  <div class="eyebrow">Experimente</div>
+  <h2>Teste a demonstração com dados fictícios.</h2>
+  <p class="lead" style="color:#9fc3c0; margin-top:14px; max-width:60ch">Sete pacientes de exemplo, entre eles casos ortopédico, esportivo, neurológico e respiratório. Os dados ficam salvos apenas no seu navegador.</p>
+  <div class="link">claude.ai/artifact/4A3TLc2UWeVucjcbpm3MQB</div>
+  <div class="creds">
+    <div class="cred"><b>Administradora</b><code>admin@demo.fisio</code><small>Acesso a todas as áreas</small></div>
+    <div class="cred"><b>Fisioterapeuta</b><code>fisio@demo.fisio</code><small>Somente os próprios pacientes</small></div>
+    <div class="cred"><b>Recepção</b><code>recepcao@demo.fisio</code><small>Sem acesso a dados clínicos</small></div>
+  </div>
+  <p style="margin-top:18px; color:#8fb3b0; font-size:14px">Senha dos três perfis: <b style="color:#fff">demo1234</b> · ou clique no perfil na tela de entrada. Não insira dados reais de pacientes na demonstração.</p>
+  <div class="foot"><b>FisioGestão</b><span>13</span></div>
+</section>
+
+</body>
+</html>

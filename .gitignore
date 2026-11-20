@@ -1,0 +1,15 @@
+# Dados reais: banco, chave de criptografia e backups — NUNCA versionar
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+secret.key
+
+# Gerado por tools/build-demo.js
+web-demo/
+
+# Configuração local
+.claude/
+node_modules/
+.env
+*.log
