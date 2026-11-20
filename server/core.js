@@ -9,8 +9,6 @@
 // então as consultas da aplicação nunca enxergam dados de outra clínica.
 const crypto = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
-const postgresMod = require('postgres');
-const postgres = postgresMod.default || postgresMod;
 
 // DATABASE_URL (manual) ou POSTGRES_URL (criada pela integração Supabase ↔ Vercel, conexão pelo pooler)
 const RAW_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL;
@@ -21,7 +19,9 @@ function cleanUrl(u) { try { const x = new URL(u); x.search = ''; return x.toStr
 const DATABASE_URL = cleanUrl(RAW_URL);
 
 const LOCAL_DB = /@(localhost|127\.0\.0\.1)[:/]/.test(DATABASE_URL);
-const sql = postgres(DATABASE_URL, {
+// O driver "postgres" é um módulo ES: é carregado com import() dinâmico, que funciona tanto no Node local
+// quanto no runtime da Vercel (onde require() de módulos ES não é suportado).
+const sqlReady = import('postgres').then(({ default: postgres }) => postgres(DATABASE_URL, {
   max: Number(process.env.PG_POOL_MAX || 3),
   prepare: false, // compatível com o pooler do Supabase em modo transação (porta 6543)
   ssl: LOCAL_DB || process.env.PG_SSL === '0' ? false : 'require',
@@ -30,7 +30,13 @@ const sql = postgres(DATABASE_URL, {
   onnotice: () => {},
   // int8 (COUNT, SUM de inteiros) e numeric chegam como número em JS
   types: { bigint: { to: 20, from: [20, 1700], serialize: String, parse: Number } },
-});
+}));
+// Fachada com a mesma interface usada no resto do código (sql.unsafe / sql.begin / sql.end)
+const sql = {
+  unsafe: async (...a) => (await sqlReady).unsafe(...a),
+  begin: async (...a) => (await sqlReady).begin(...a),
+  end: async (...a) => (await sqlReady).end(...a),
+};
 
 // ---------- Contexto da requisição (transação + clínica + chave) ----------
 const als = new AsyncLocalStorage();
