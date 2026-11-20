@@ -14,7 +14,7 @@ Cada clínica cria a própria conta em **/#/criar-conta**, ganha **7 dias gráti
 
 1. **Supabase** — crie um projeto (região *South America — São Paulo*). Em *Connect → Transaction pooler*, copie a string de conexão (porta 6543). As tabelas são criadas sozinhas no primeiro acesso.
 2. **Stripe** — crie um produto com preço **recorrente** (ex.: mensal) e copie o `price_...`. Em *Developers → Webhooks*, crie um endpoint `https://SEU-DOMINIO/api/stripe/webhook` com os eventos `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated` e `customer.subscription.deleted`, e copie o segredo `whsec_...`. Ative o *Customer portal* em *Settings → Billing*.
-3. **Vercel** — importe o repositório (sem framework, sem build). Em *Settings → Environment Variables*, cadastre as variáveis de `.env.example`: `DATABASE_URL`, `MASTER_KEY`, `APP_URL`, `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `CRON_SECRET`. A função roda em São Paulo (`gru1`), e um cron diário limpa sessões vencidas.
+3. **Vercel** — importe o repositório (sem framework, sem build). Conecte o banco pela integração **Supabase** do Marketplace da Vercel (ela cria `POSTGRES_URL` sozinha) ou cadastre `DATABASE_URL` à mão. Em *Settings → Environment Variables*, cadastre também: `MASTER_KEY`, `APP_URL`, `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `CRON_SECRET`. A função roda em São Paulo (`gru1`), e um cron diário limpa sessões vencidas.
 
 > ⚠️ **Guarde a `MASTER_KEY` em local seguro e separado.** Sem ela, os prontuários de todas as clínicas ficam ilegíveis — nem os backups do Supabase resolvem.
 

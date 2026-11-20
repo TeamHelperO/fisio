@@ -12,8 +12,13 @@ const { AsyncLocalStorage } = require('async_hooks');
 const postgresMod = require('postgres');
 const postgres = postgresMod.default || postgresMod;
 
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) throw new Error('Defina a variável DATABASE_URL (conexão Postgres/Supabase).');
+// DATABASE_URL (manual) ou POSTGRES_URL (criada pela integração Supabase ↔ Vercel, conexão pelo pooler)
+const RAW_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+if (!RAW_URL) throw new Error('Defina DATABASE_URL (ou instale a integração Supabase na Vercel, que cria POSTGRES_URL).');
+// Remove parâmetros da URL (sslmode, supa, pgbouncer...): o driver os repassaria ao servidor como configurações
+// desconhecidas. O SSL é configurado abaixo.
+function cleanUrl(u) { try { const x = new URL(u); x.search = ''; return x.toString(); } catch { return u; } }
+const DATABASE_URL = cleanUrl(RAW_URL);
 
 const LOCAL_DB = /@(localhost|127\.0\.0\.1)[:/]/.test(DATABASE_URL);
 const sql = postgres(DATABASE_URL, {
