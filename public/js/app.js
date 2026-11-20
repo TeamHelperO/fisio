@@ -51,7 +51,8 @@ function loginScreen() {
     h('label', { class: 'field' }, h('span', null, 'E-mail'), email),
     h('label', { class: 'field' }, h('span', null, 'Senha'), pw),
     btn,
-    DEMO ? demoLogin(async (who) => { try { await post('/login', { email: `${who}@demo.fisio`, password: 'demo1234' }); await boot(); } catch (err) { toast(err.message, 'error'); } }) : null);
+    DEMO ? demoLogin(async (who) => { try { await post('/login', { email: `${who}@demo.fisio`, password: 'demo1234' }); await boot(); } catch (err) { toast(err.message, 'error'); } })
+      : h('p', { class: 'auth-switch' }, 'Ainda não usa o FisioGestão? ', h('a', { href: '#/criar-conta', onclick: (e) => { e.preventDefault(); signupScreen(); } }, `Crie sua conta — ${TRIAL_DAYS} dias grátis`)));
   authShell(form); if (!DEMO) setTimeout(() => email.focus(), 50);
 }
 
@@ -65,27 +66,59 @@ function demoLogin(enter) {
     h('small', null, 'Todos os dados são fictícios e ficam salvos só neste navegador. Senha dos três perfis: demo1234.'));
 }
 
-function setupScreen() {
+const TRIAL_DAYS = 7;
+function signupScreen() {
   const f = {
-    name: h('input', { class: 'input', required: true }), crefito: h('input', { class: 'input', placeholder: 'Ex.: 123456-F' }),
+    clinic_name: h('input', { class: 'input', required: true, placeholder: 'Ex.: Clínica Movimento ou seu nome' }),
+    name: h('input', { class: 'input', required: true, autocomplete: 'name' }), crefito: h('input', { class: 'input', placeholder: 'Ex.: 123456-F' }),
     email: h('input', { class: 'input', type: 'email', autocomplete: 'username', required: true }),
     password: h('input', { class: 'input', type: 'password', autocomplete: 'new-password', required: true }),
     password2: h('input', { class: 'input', type: 'password', autocomplete: 'new-password', required: true }),
+    terms: h('input', { type: 'checkbox' }),
   };
+  const btn = h('button', { class: 'btn primary', type: 'submit' }, `Começar teste grátis de ${TRIAL_DAYS} dias`);
   const form = h('form', { class: 'auth-box stack', onsubmit: async (e) => {
     e.preventDefault();
     if (f.password.value !== f.password2.value) return toast('As senhas não conferem', 'error');
-    try { await post('/setup', { name: f.name.value, crefito: f.crefito.value, email: f.email.value, password: f.password.value }); toast('Conta criada!'); await boot(); }
-    catch (err) { toast(err.message, 'error'); }
+    if (!f.terms.checked) return toast('Para continuar, aceite os Termos de Uso e a Política de Privacidade', 'error');
+    btn.disabled = true;
+    try {
+      await post('/signup', { clinic_name: f.clinic_name.value, name: f.name.value, crefito: f.crefito.value, email: f.email.value, password: f.password.value, accept_terms: true });
+      toast('Conta criada! Bem-vindo(a) ao FisioGestão.'); location.hash = '#/configuracoes/perfil'; await boot();
+    } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
   } },
-    h('div', null, h('h2', null, 'Configuração inicial'), h('p', null, 'Crie a conta do administrador (profissional responsável).')),
-    h('label', { class: 'field' }, h('span', null, 'Nome completo'), f.name),
+    h('div', null, h('h2', null, 'Crie sua conta'), h('p', null, `${TRIAL_DAYS} dias grátis, sem cartão de crédito. Depois, assine para continuar registrando — seus dados ficam sempre disponíveis para consulta.`)),
+    h('label', { class: 'field' }, h('span', null, 'Nome da clínica ou consultório'), f.clinic_name),
+    h('label', { class: 'field' }, h('span', null, 'Seu nome completo'), f.name),
     h('label', { class: 'field' }, h('span', null, 'CREFITO'), f.crefito),
-    h('label', { class: 'field' }, h('span', null, 'E-mail'), f.email),
+    h('label', { class: 'field' }, h('span', null, 'E-mail (será seu login)'), f.email),
     h('label', { class: 'field' }, h('span', null, 'Senha'), f.password, h('small', { class: 'help' }, 'Mínimo de 8 caracteres, com letras e números.')),
     h('label', { class: 'field' }, h('span', null, 'Confirmar senha'), f.password2),
-    h('button', { class: 'btn primary', type: 'submit' }, 'Criar conta e entrar'));
-  authShell(form);
+    h('label', { class: 'terms-check' }, f.terms, h('span', null, 'Li e aceito os ', h('a', { href: '/termos.html', target: '_blank', rel: 'noopener' }, 'Termos de Uso'), ' e a ', h('a', { href: '/privacidade.html', target: '_blank', rel: 'noopener' }, 'Política de Privacidade'), '.')),
+    btn,
+    h('p', { class: 'auth-switch' }, 'Já tem conta? ', h('a', { href: '#/', onclick: (e) => { e.preventDefault(); loginScreen(); } }, 'Entrar')));
+  authShell(form); setTimeout(() => f.clinic_name.focus(), 50);
+}
+
+// Aviso de teste grátis / assinatura no topo do sistema
+function billingBanner() {
+  const c = state.clinic; if (!c || DEMO) return null;
+  const a = c.access; const admin = state.user.role === 'admin';
+  const go2 = admin ? h('a', { class: 'btn sm', href: '#/configuracoes/assinatura' }, 'Assinar agora') : null;
+  if (a.mode === 'readonly') {
+    return h('div', { class: 'billing-banner warn' }, icon('alert', 16), h('span', null,
+      a.reason === 'trial_ended' ? h('b', null, 'Seu teste grátis terminou. ') : h('b', null, 'A assinatura da clínica não está ativa. '),
+      'Os dados continuam disponíveis para consulta e exportação, mas novos registros estão bloqueados.', admin ? '' : ' Fale com o administrador da clínica.'), go2);
+  }
+  if (a.reason === 'trial') {
+    return h('div', { class: 'billing-banner' }, icon('clock', 16), h('span', null,
+      a.trial_days_left <= 1 ? 'Último dia do teste grátis.' : `Teste grátis: faltam ${a.trial_days_left} dias.`), go2);
+  }
+  if (a.reason === 'past_due' && admin) {
+    return h('div', { class: 'billing-banner warn' }, icon('alert', 16), h('span', null, 'Não conseguimos cobrar a assinatura. Atualize a forma de pagamento para não perder o acesso.'),
+      h('a', { class: 'btn sm', href: '#/configuracoes/assinatura' }, 'Atualizar pagamento'));
+  }
+  return null;
 }
 
 // ---------------- Layout ----------------
@@ -107,6 +140,7 @@ function buildShell() {
     h('div', { class: 'main' },
       h('header', { class: 'topbar' }, h('button', { class: 'icon-btn', 'aria-label': 'Abrir menu', onclick: () => app.classList.toggle('menu-open') }, icon('menu', 22)), h('b', null, 'FisioGestão')),
       DEMO ? h('div', { class: 'demo-banner' }, h('span', null, h('b', null, 'Demonstração'), ' · dados fictícios, salvos só neste navegador. Não insira dados reais de pacientes.'), h('button', { class: 'btn sm', onclick: resetDemo }, 'Restaurar dados de exemplo')) : null,
+      billingBanner(),
       content));
   app.addEventListener('click', (e) => { if (app.classList.contains('menu-open') && e.target === app) app.classList.remove('menu-open'); });
   root.replaceChildren(app);
@@ -147,7 +181,7 @@ async function router() {
   if (!shell) buildShell();
   const raw = getRoute();
   const [path, query] = raw.split('?');
-  if (!path) return go('#/dashboard');
+  if (!path || path === 'criar-conta') return go('#/dashboard');
   const top = path.split('/')[0];
   const navKey = top === 'registro' ? { anamnese: 'anamnese', avaliacao: 'avaliacoes', plano: 'planos', evolucao: 'evolucoes' }[path.split('/')[1]] || 'pacientes' : top;
   shell.nav.querySelectorAll('a').forEach((a) => a.classList.toggle('active', a.dataset.path === navKey));
@@ -178,7 +212,7 @@ if (DEMO) document.addEventListener('click', (e) => { const a = e.target.closest
 
 async function loadSession() {
   const me = await get('/me');
-  state.user = me.user; state.settings = me.settings;
+  state.user = me.user; state.settings = me.settings; state.clinic = me.clinic || null;
   state.professionals = await get('/users').then((us) => us.filter((u) => u.role !== 'recepcao' && u.active !== 0));
 }
 
@@ -188,9 +222,9 @@ async function boot() {
     await loadSession();
     shell = null; router();
   } catch (e) {
-    if (e.status !== 401) { root.replaceChildren(h('div', { class: 'content' }, h('div', { class: 'notice' }, icon('alert'), 'Não foi possível conectar ao servidor.'))); return; }
-    const st = await get('/setup-status');
-    st.needsSetup ? setupScreen() : loginScreen();
+    if (e.status !== 401 && e.status !== 403) { root.replaceChildren(h('div', { class: 'content' }, h('div', { class: 'notice' }, icon('alert'), 'Não foi possível conectar ao servidor.'))); return; }
+    if (e.status === 403) toast(e.message, 'error');
+    !DEMO && getRoute() === 'criar-conta' ? signupScreen() : loginScreen();
   }
 }
 boot();

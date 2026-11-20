@@ -1,5 +1,5 @@
 // Estado global da sessão e navegação
-export const state = { user: null, settings: {}, professionals: [] };
+export const state = { user: null, settings: {}, professionals: [], clinic: null };
 export const DEMO = !!window.FISIO_DEMO;
 export const isClinical = () => ['admin', 'fisio'].includes(state.user?.role);
 export const isAdmin = () => state.user?.role === 'admin';

@@ -5,16 +5,16 @@ import { state, isAdmin, reloadSettings } from '../state.js';
 
 const refresh = () => dispatchEvent(new Event('fisio:refresh'));
 
-export async function settingsPage(view, [tab]) {
-  const tabs = [['perfil', 'Profissional e clínica', true], ['usuarios', 'Usuários e acesso', true], ['seguranca', 'Minha conta'], ['lgpd', 'LGPD', true], ['backup', 'Backup', true], ['auditoria', 'Registro de alterações', true]]
+export async function settingsPage(view, [tab], query) {
+  const tabs = [['perfil', 'Profissional e clínica', true], ['usuarios', 'Usuários e acesso', true], ['seguranca', 'Minha conta'], ['lgpd', 'LGPD', true], ['assinatura', 'Assinatura e dados', true], ['auditoria', 'Registro de alterações', true]]
     .filter((t) => !t[2] || isAdmin());
   tab = tab || tabs[0][0];
   const body = h('div');
-  view.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Configurações'), h('p', null, 'Dados do profissional, usuários, segurança, privacidade e backup.'))),
+  view.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Configurações'), h('p', null, 'Dados do profissional, usuários, segurança, privacidade e assinatura.'))),
     h('nav', { class: 'tabs' }, tabs.map(([k, l]) => h('a', { href: `#/configuracoes/${k}`, class: k === tab ? 'on' : '' }, l))), body);
-  const T = { perfil, usuarios, seguranca, lgpd, backup, auditoria };
+  const T = { perfil, usuarios, seguranca, lgpd, assinatura, auditoria };
   if (!tabs.find((t) => t[0] === tab)) return body.append(h('div', { class: 'notice' }, icon('shield'), 'Acesso restrito ao administrador.'));
-  await T[tab](body);
+  await T[tab](body, query);
 }
 
 async function perfil(body) {
@@ -28,6 +28,7 @@ async function perfil(body) {
     { key: 'email', label: 'E-mail', type: 'email' },
     { key: 'address', label: 'Endereço', span: true },
     { key: 'city', label: 'Cidade/UF (para local e data nos documentos)' },
+    { key: 'timezone', label: 'Fuso horário da clínica', type: 'select', options: Object.entries(await get('/timezones')), empty: false, help: 'Usado para "hoje", agenda e datas dos registros.' },
   ], state.settings);
   body.append(h('div', { class: 'card' }, h('div', { class: 'card-body stack' }, form,
     h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn primary', onclick: async () => {
@@ -77,7 +78,7 @@ async function seguranca(body) {
       h('ul', { style: { margin: 0, paddingLeft: '18px', display: 'grid', gap: '8px' } },
         ['Login individual com senha protegida por hash (scrypt)', 'Bloqueio temporário após 5 tentativas de login incorretas', 'Sessão expira após 10 horas de inatividade',
           'Registros clínicos criptografados no banco (AES-256-GCM)', 'Controle de acesso por perfil e por profissional responsável',
-          'Registro de acessos e alterações (auditoria) com histórico de versões dos registros clínicos', 'Backup automático diário + backup antes de exclusões',
+          'Registro de acessos e alterações (auditoria) com histórico de versões dos registros clínicos', 'Dados de cada clínica isolados em área própria do banco, com chave de criptografia própria', 'Cópias de segurança diárias do banco de dados + cópia criptografada antes de excluir pacientes',
           'Proteções contra XSS, CSRF e clickjacking (cabeçalhos de segurança)'].map((t) => h('li', null, t)))))));
 }
 
@@ -93,27 +94,55 @@ async function lgpd(body) {
       h('button', { class: 'btn primary', onclick: async () => { try { await put('/settings', form.getValues()); await reloadSettings(); toast('Termo atualizado'); refresh(); } catch (e) { toast(e.message, 'error'); } } }, icon('check', 16), 'Salvar termo'))))));
 }
 
-async function backup(body) {
-  const list = await get('/backups');
-  const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.ceil(b / 1024)} KB`);
-  const download = async (name) => {
-    const res = await fetch(`/api/backups/${encodeURIComponent(name)}`, { credentials: 'same-origin' });
-    if (!res.ok) return toast('Falha ao baixar backup', 'error');
-    downloadFile(name, await res.blob());
+const SUB_STATUS = { active: 'Ativa', trialing: 'Em período de teste', past_due: 'Pagamento atrasado', canceled: 'Cancelada', unpaid: 'Não paga', incomplete: 'Pagamento pendente', incomplete_expired: 'Expirada', paused: 'Pausada' };
+async function assinatura(body, query) {
+  let info = await get('/billing');
+  // volta do Stripe: o webhook pode levar alguns segundos para confirmar a assinatura
+  if (query?.get('status') === 'ok' && info.access.reason !== 'subscription') {
+    for (let i = 0; i < 6 && info.access.reason !== 'subscription'; i++) { await new Promise((r) => setTimeout(r, 1500)); info = await get('/billing'); }
+    if (info.access.reason === 'subscription') { toast('Assinatura confirmada. Obrigado!'); location.hash = '#/configuracoes/assinatura'; location.reload(); return; }
+  }
+  const a = info.access;
+  const fmt = (d) => (d ? new Date(d).toLocaleDateString('pt-BR') : '—');
+  const goTo = async (path, btn) => {
+    btn.disabled = true;
+    try { const r = await post(path); location.href = r.url; } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
   };
+  const subscribed = ['active', 'trialing', 'past_due'].includes(info.subscription_status);
+  const pill = (tone, text) => h('span', { class: `badge ${tone}` }, text);
+  let status;
+  if (subscribed) status = pill(info.subscription_status === 'past_due' ? 'amber' : 'green', SUB_STATUS[info.subscription_status] || info.subscription_status);
+  else if (a.reason === 'trial') status = [pill('blue', 'Teste grátis'), ` ${a.trial_days_left} dia(s) restante(s), até ${fmt(info.trial_ends_at)}`];
+  else status = pill('gray', a.reason === 'trial_ended' ? 'Teste grátis encerrado' : `Assinatura ${(SUB_STATUS[info.subscription_status] || 'inativa').toLowerCase()}`);
+
+  const subBtn = h('button', { class: 'btn primary' }, icon('wallet', 16), 'Assinar o FisioGestão');
+  subBtn.onclick = () => goTo('/billing/checkout', subBtn);
+  const portalBtn = h('button', { class: 'btn' }, icon('settings', 16), 'Gerenciar assinatura e pagamento');
+  portalBtn.onclick = () => goTo('/billing/portal', portalBtn);
+
   body.append(h('div', { class: 'stack' },
-    h('div', { class: 'notice info' }, icon('shield'), h('div', null, 'Um backup automático é criado diariamente na pasta ', h('code', null, 'data/backups'), ' do servidor (são mantidos os 30 mais recentes). Guarde cópias também fora do computador (HD externo ou nuvem criptografada). ',
-      h('b', null, 'Importante: '), 'os registros clínicos são criptografados com a chave ', h('code', null, 'data/secret.key'), ' — guarde uma cópia dessa chave em local seguro e separado; sem ela os backups não podem ser lidos.')),
-    h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Backups disponíveis'),
-      h('button', { class: 'btn primary sm', onclick: async () => { try { const r = await post('/backups'); toast(`Backup criado: ${r.name}`); refresh(); } catch (e) { toast(e.message, 'error'); } } }, icon('download', 15), 'Criar backup agora')),
-    list.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'table' }, h('thead', null, h('tr', null, ['Arquivo', 'Data', 'Tamanho', ''].map((t) => h('th', null, t)))),
-      h('tbody', null, list.map((b) => h('tr', null, h('td', null, b.name), h('td', null, new Date(b.mtime).toLocaleString('pt-BR')), h('td', null, fmtSize(b.size)),
-        h('td', { class: 'actions' }, h('button', { class: 'btn sm', onclick: () => download(b.name) }, icon('download', 14), 'Baixar')))))))
-      : empty('Nenhum backup ainda.')),
-    h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Como restaurar')), h('div', { class: 'card-body' },
-      h('ol', { style: { margin: 0, paddingLeft: '18px', display: 'grid', gap: '6px' } },
-        h('li', null, 'Pare o servidor.'), h('li', null, 'Copie o arquivo de backup para data/fisio.sqlite (substituindo o atual; apague fisio.sqlite-wal e fisio.sqlite-shm, se existirem).'),
-        h('li', null, 'Garanta que data/secret.key é a mesma chave usada quando o backup foi criado.'), h('li', null, 'Inicie o servidor novamente.'))))));
+    query?.get('status') === 'cancelado' ? h('div', { class: 'notice' }, icon('alert'), 'A assinatura não foi concluída. Você pode tentar novamente quando quiser.') : null,
+    h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Assinatura')), h('div', { class: 'card-body stack' },
+      h('p', { style: { margin: 0, fontSize: '15px' } }, h('b', null, 'Situação: '), status),
+      subscribed && info.current_period_end ? h('p', { style: { margin: 0 } }, info.cancel_at_period_end ? `Cancelamento agendado: o acesso continua até ${fmt(info.current_period_end)}.` : `Próxima cobrança: ${fmt(info.current_period_end)}.`) : null,
+      a.mode === 'readonly' ? h('div', { class: 'notice' }, icon('alert'), 'Enquanto a assinatura não estiver ativa, os dados ficam disponíveis apenas para consulta e exportação.') : null,
+      !info.billing_enabled ? h('div', { class: 'notice info' }, icon('clock'), 'A assinatura on-line ainda não foi liberada nesta instalação.') : null,
+      h('div', { class: 'row' }, info.billing_enabled && !subscribed ? subBtn : null, info.billing_enabled && (subscribed || info.subscription_status) ? portalBtn : null),
+      h('small', { class: 'help' }, 'Pagamento processado pelo Stripe. O FisioGestão não armazena dados do seu cartão. Você pode cancelar a qualquer momento em "Gerenciar assinatura".'))),
+    h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Seus dados')), h('div', { class: 'card-body stack' },
+      h('p', { style: { margin: 0 } }, 'Os dados da clínica ficam em uma área isolada do banco de dados, com chave de criptografia própria para os registros clínicos. A infraestrutura faz cópias de segurança diárias.'),
+      h('p', { style: { margin: 0 } }, 'Você pode baixar a qualquer momento uma cópia completa (pacientes, prontuários, agenda, financeiro e registro de alterações) em formato JSON — inclusive com a assinatura inativa.'),
+      h('div', null, h('button', { class: 'btn', onclick: async (e) => {
+        const b = e.currentTarget; b.disabled = true;
+        try {
+          const res = await fetch('/api/clinic/export', { credentials: 'same-origin' });
+          if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Falha ao exportar');
+          const name = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'fisiogestao.json';
+          downloadFile(name, await res.blob()); toast('Exportação concluída');
+        } catch (err) { toast(err.message, 'error'); }
+        b.disabled = false;
+      } }, icon('download', 15), 'Exportar todos os dados da clínica')),
+      h('small', { class: 'help' }, 'O arquivo contém dados de saúde sem criptografia: guarde-o em local seguro.')))));
 }
 
 async function auditoria(body) {

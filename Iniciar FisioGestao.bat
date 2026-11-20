@@ -1,9 +1,7 @@
 @echo off
-title FisioGestao
+title FisioGestao (desenvolvimento)
 cd /d "%~dp0"
-set "NODE=node"
-where node >nul 2>nul || set "NODE=%LOCALAPPDATA%\Programs\node-v26.13.1-win-x64\node.exe"
-if not exist "%NODE%" if not "%NODE%"=="node" (echo Node.js nao encontrado. Instale em https://nodejs.org & pause & exit /b 1)
+if not exist ".env" (echo Crie o arquivo .env a partir de .env.example antes de iniciar. & pause & exit /b 1)
 start "" http://localhost:3000
-"%NODE%" --disable-warning=ExperimentalWarning server\server.js
+node server\server.js
 pause

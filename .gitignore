@@ -13,3 +13,6 @@ web-demo/
 node_modules/
 .env
 *.log
+
+# Vercel
+.vercel/

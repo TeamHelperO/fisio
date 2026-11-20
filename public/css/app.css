@@ -325,3 +325,14 @@ textarea.input { resize: vertical; min-height: 64px; }
   .patient-head > .grow { flex: 1 1 calc(100% - 72px); }
   .patient-head > .row { width: 100%; }
 }
+
+/* ---------- SaaS: cadastro e assinatura ---------- */
+.auth-box .auth-switch { margin: 14px 0 0; text-align: center; font-size: 13.5px; }
+.auth-box .auth-switch a { font-weight: 600; }
+.terms-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--muted); line-height: 1.4; cursor: pointer; }
+.terms-check input { accent-color: var(--primary); margin: 2px 0 0; flex: none; }
+.billing-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 30px; background: var(--blue-50); color: #1e3a8a; border-bottom: 1px solid #d6e2ff; font-size: 13px; }
+.billing-banner span { flex: 1; min-width: 200px; }
+.billing-banner.warn { background: var(--amber-50); color: #7c3f06; border-bottom-color: #f6dfb5; }
+.billing-banner .btn { margin-left: auto; }
+@media (max-width: 900px) { .billing-banner { padding: 8px 16px; } }

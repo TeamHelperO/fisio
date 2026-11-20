@@ -2,19 +2,28 @@
 
 Prontuário eletrônico completo para fisioterapeutas autônomos e clínicas: cadastro de pacientes, anamnese, avaliação, plano de tratamento, evolução das sessões, agenda, financeiro (com organização para o Carnê-Leão), documentos em PDF e adequação à LGPD.
 
-## Como iniciar
+## Como funciona (SaaS)
 
-Requisito: **Node.js 22.13 ou superior** (https://nodejs.org). Não há dependências para instalar — o banco de dados (SQLite) é nativo do Node.
+Cada clínica cria a própria conta em **/#/criar-conta**, ganha **7 dias grátis sem cartão** e depois assina pelo **Stripe**. Sem assinatura ativa, a conta fica em **somente leitura**: dá para consultar e exportar tudo, mas não criar ou alterar registros.
 
-- **Windows:** dê dois cliques em `Iniciar FisioGestao.bat` (abre o navegador automaticamente).
-- **Terminal:** `npm start` e acesse http://localhost:3000
+- **Isolamento:** cada clínica tem um *schema* próprio no Postgres (`c_<id>`), com as mesmas tabelas. Toda requisição roda numa transação apontada para o schema da clínica do usuário logado — uma consulta nunca enxerga outra clínica.
+- **Criptografia:** cada clínica tem a própria chave AES-256-GCM para os registros clínicos, guardada cifrada pela `MASTER_KEY`.
+- **Plataforma:** o schema `saas` guarda clínicas, assinaturas, sessões, índice de e-mails (um e-mail = uma clínica) e tentativas de login.
 
-No primeiro acesso, crie a conta do **administrador** (profissional responsável). Depois, em **Configurações**, preencha os dados do profissional/clínica (aparecem nos documentos e recibos) e cadastre outros usuários.
+## Publicar (Supabase + Vercel + Stripe)
 
-### Acesso pelo celular/tablet na mesma rede
-Por segurança o servidor escuta apenas no próprio computador. Para liberar na rede local:
-`npm run start:rede` e acesse `http://IP-DO-COMPUTADOR:3000` pelo outro aparelho.
-Para acesso pela internet, publique atrás de HTTPS (proxy reverso como Caddy/Nginx) e defina `COOKIE_SECURE=1`.
+1. **Supabase** — crie um projeto (região *South America — São Paulo*). Em *Connect → Transaction pooler*, copie a string de conexão (porta 6543). As tabelas são criadas sozinhas no primeiro acesso.
+2. **Stripe** — crie um produto com preço **recorrente** (ex.: mensal) e copie o `price_...`. Em *Developers → Webhooks*, crie um endpoint `https://SEU-DOMINIO/api/stripe/webhook` com os eventos `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated` e `customer.subscription.deleted`, e copie o segredo `whsec_...`. Ative o *Customer portal* em *Settings → Billing*.
+3. **Vercel** — importe o repositório (sem framework, sem build). Em *Settings → Environment Variables*, cadastre as variáveis de `.env.example`: `DATABASE_URL`, `MASTER_KEY`, `APP_URL`, `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `CRON_SECRET`. A função roda em São Paulo (`gru1`), e um cron diário limpa sessões vencidas.
+
+> ⚠️ **Guarde a `MASTER_KEY` em local seguro e separado.** Sem ela, os prontuários de todas as clínicas ficam ilegíveis — nem os backups do Supabase resolvem.
+
+### Desenvolvimento local
+Requisito: **Node.js 22.13+**. Copie `.env.example` para `.env`, preencha `DATABASE_URL` (um projeto Supabase de desenvolvimento ou qualquer Postgres) e `MASTER_KEY`, rode `npm install` e `npm run dev`. Acesse http://localhost:3000.
+
+### Administração da plataforma
+Não há painel do dono da plataforma ainda. Para suspender ou liberar uma clínica manualmente, use o SQL do Supabase:
+`UPDATE saas.clinics SET manual_access = 'blocked' WHERE id = 123;` (`'full'`, `'readonly'` ou `NULL` para voltar ao automático).
 
 ## Módulos
 
@@ -38,22 +47,21 @@ Os documentos abrem em uma nova aba já formatados em A4, com identificação do
 
 - Login individual; senhas com hash **scrypt**; bloqueio após 5 tentativas; sessão expira após 10 h de inatividade.
 - Perfis: **Administrador** (tudo), **Fisioterapeuta** (prontuários dos pacientes sob sua responsabilidade), **Recepção** (cadastro, agenda e financeiro — sem dados clínicos).
-- Registros clínicos **criptografados** no banco (AES-256-GCM). A chave fica em `data/secret.key` (ou na variável `FISIO_KEY`).
+- Registros clínicos **criptografados** no banco (AES-256-GCM), com chave própria por clínica.
 - **Registro de alterações** (quem, quando, o quê) incluindo visualizações de prontuário; cada edição de registro clínico preserva a versão anterior; exclusões de registros clínicos são lógicas (guarda legal).
-- **Backup** automático diário em `data/backups` (30 mais recentes), backup manual e download pelo sistema, backup automático antes de excluir paciente.
+- **Cópias de segurança** diárias pelo Supabase; cópia criptografada do cadastro antes de excluir um paciente; exportação completa da clínica em JSON a qualquer momento (Configurações → Assinatura e dados).
 - **Consentimento** do titular registrado por paciente (versão do termo, data, forma, responsável), revogação, exportação de dados (portabilidade) e exclusão pelo administrador.
 - **Guarda legal:** pacientes com prontuário clínico não podem ser excluídos antes de 5 anos do último registro (marque-os como "Inativo"); cadastros sem prontuário podem ser excluídos a qualquer momento.
 - Cabeçalhos de segurança (CSP, anti-clickjacking), proteção CSRF, cookies HttpOnly/SameSite.
 
-> ⚠️ **Guarde uma cópia de `data/secret.key` em local seguro e separado dos backups.** Sem ela, os registros clínicos não podem ser lidos.
 > Revise o texto do termo de consentimento com sua assessoria jurídica e confirme com um contador as regras do Carnê-Leão.
 
 ## Estrutura
 
 ```
-server/       servidor HTTP (Node, sem dependências), banco SQLite, API REST
-public/       interface web (HTML/CSS/JS modular, responsiva)
-data/         banco de dados, chave de criptografia e backups (criada no 1º uso)
+api/          função serverless da Vercel (encaminha para server/app.js)
+server/       API (app.js), banco multi-clínica (core.js), Stripe (stripe.js), servidor local (server.js)
+public/       interface web (HTML/CSS/JS modular, responsiva), termos e privacidade
 ```
 
 Para incluir novos profissionais, use **Configurações → Usuários**. A estrutura de formulários clínicos fica em `public/js/schemas.js` — novos campos podem ser adicionados ali sem alterar o banco.

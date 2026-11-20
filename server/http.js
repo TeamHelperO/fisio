@@ -27,7 +27,8 @@ function match(method, pathname) {
   return null;
 }
 
-function readBody(req, limit = 2 * 1024 * 1024) {
+// raw = true devolve o corpo sem interpretar (necessário para conferir a assinatura do webhook do Stripe)
+function readBody(req, limit = 2 * 1024 * 1024, raw = false) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', (c) => {
@@ -36,9 +37,13 @@ function readBody(req, limit = 2 * 1024 * 1024) {
       chunks.push(c);
     });
     req.on('end', () => {
-      if (!chunks.length) return resolve({});
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-      catch { reject(new HttpError(400, 'JSON inválido')); }
+      const buf = Buffer.concat(chunks);
+      if (raw) return resolve(buf);
+      if (!buf.length) return resolve({});
+      try {
+        const v = JSON.parse(buf.toString('utf8'));
+        resolve(v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+      } catch { reject(new HttpError(400, 'JSON inválido')); }
     });
     req.on('error', reject);
   });
@@ -48,7 +53,7 @@ function parseCookies(req) {
   const out = {};
   (req.headers.cookie || '').split(';').forEach((p) => {
     const i = p.indexOf('=');
-    if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim());
+    if (i > 0) { try { out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); } catch { /* cookie malformado */ } }
   });
   return out;
 }
@@ -77,6 +82,7 @@ const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.webmanifest': 'application/manifest+json',
 };
+// Usado apenas no servidor local de desenvolvimento (na Vercel os arquivos de public/ são servidos pela CDN)
 function serveStatic(root, req, res, pathname) {
   let rel;
   try { rel = decodeURIComponent(pathname); } catch { return send(res, 400, 'Endereço inválido'); }
@@ -91,4 +97,4 @@ function serveStatic(root, req, res, pathname) {
   });
 }
 
-module.exports = { HttpError, route, match, readBody, parseCookies, send, serveStatic };
+module.exports = { HttpError, route, match, readBody, parseCookies, send, serveStatic, SECURITY_HEADERS };

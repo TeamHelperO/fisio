@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Política de Privacidade — FisioGestão</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/legal.css">
+</head>
+<body>
+<main>
+  <p class="draft">MODELO — revisar com assessoria jurídica e preencher os campos entre colchetes antes de publicar.</p>
+  <h1>Política de Privacidade do FisioGestão</h1>
+  <p class="meta">Versão 1.0 · vigente a partir de [DATA]</p>
+
+  <h2>1. Papéis na LGPD</h2>
+  <ul>
+    <li><b>Dados dos pacientes</b> (cadastro, prontuário, agenda, financeiro): a clínica ou o profissional que usa o sistema é o <b>controlador</b>. O FisioGestão ([RAZÃO SOCIAL], CNPJ [CNPJ]) atua como <b>operador</b>, tratando esses dados apenas para prestar o serviço e conforme as instruções do controlador.</li>
+    <li><b>Dados dos usuários e da conta</b> (nome, e-mail, CREFITO, dados de cobrança): o FisioGestão é o controlador.</li>
+  </ul>
+
+  <h2>2. Dados que tratamos e por quê</h2>
+  <ul>
+    <li><b>Conta e usuários:</b> nome, e-mail, CREFITO, perfil de acesso, registros de acesso (data, hora e IP) — para autenticação, segurança e cumprimento do Marco Civil da Internet.</li>
+    <li><b>Assinatura:</b> nome da clínica, e-mail e situação do pagamento. Os dados do cartão são tratados diretamente pelo Stripe; o FisioGestão não os armazena.</li>
+    <li><b>Dados inseridos pela clínica:</b> dados pessoais e de saúde dos pacientes, armazenados exclusivamente para a prestação do serviço.</li>
+  </ul>
+
+  <h2>3. Segurança</h2>
+  <ul>
+    <li>Os dados de cada clínica ficam em área separada do banco de dados.</li>
+    <li>Os registros clínicos são criptografados (AES-256-GCM) com uma chave exclusiva de cada clínica.</li>
+    <li>Conexões protegidas por HTTPS, senhas armazenadas com hash (scrypt), controle de acesso por perfil e registro de acessos e alterações.</li>
+    <li>Cópias de segurança diárias do banco de dados.</li>
+  </ul>
+
+  <h2>4. Compartilhamento e suboperadores</h2>
+  <p>Não vendemos dados. Utilizamos os seguintes fornecedores para operar o serviço:</p>
+  <ul>
+    <li><b>Supabase</b> — banco de dados (região: [REGIÃO, ex.: São Paulo]).</li>
+    <li><b>Vercel</b> — hospedagem da aplicação.</li>
+    <li><b>Stripe</b> — processamento de pagamentos da assinatura.</li>
+  </ul>
+  <p>Dados também podem ser compartilhados por ordem judicial ou obrigação legal.</p>
+
+  <h2>5. Transferência internacional</h2>
+  <p>Alguns fornecedores podem processar dados fora do Brasil. Nesses casos, adotamos as salvaguardas previstas no art. 33 da LGPD. [DETALHAR CONFORME OS CONTRATOS COM OS FORNECEDORES.]</p>
+
+  <h2>6. Retenção</h2>
+  <p>Os dados da clínica são mantidos enquanto a conta existir. Após o encerramento, ficam disponíveis por [90] dias para exportação e depois são eliminados, ressalvadas obrigações legais. Registros de acesso são mantidos por no mínimo 6 meses (Marco Civil da Internet).</p>
+
+  <h2>7. Direitos dos titulares</h2>
+  <p>Pacientes devem dirigir seus pedidos (acesso, correção, portabilidade etc.) à clínica que os atende — o sistema oferece ferramentas para exportação e registro de consentimento. Usuários do FisioGestão podem exercer seus direitos pelo e-mail <b>[E-MAIL DO ENCARREGADO]</b>.</p>
+
+  <h2>8. Encarregado (DPO)</h2>
+  <p>[NOME DO ENCARREGADO] — [E-MAIL DO ENCARREGADO].</p>
+
+  <h2>9. Incidentes de segurança</h2>
+  <p>Em caso de incidente que possa acarretar risco ou dano relevante, comunicaremos as clínicas afetadas sem demora injustificada, para que possam cumprir suas obrigações perante a ANPD e os titulares.</p>
+
+  <p class="back"><a href="/">← Voltar ao FisioGestão</a></p>
+</main>
+</body>
+</html>
