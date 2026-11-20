@@ -2,15 +2,16 @@
 // API do FisioGestão (SaaS multi-clínica). Exporta `handler(req, res)`, usado pela Vercel (api/index.js)
 // e pelo servidor local de desenvolvimento (server/server.js).
 const crypto = require('crypto');
-const { q, tx, sql, als, encrypt, decrypt, nowParts, TIMEZONES, ensureCore, withClinic, getClinic, createClinic, dropClinic } = require('./core');
-const { HttpError, route, match, readBody, parseCookies, send } = require('./http');
+const { q, tx, sql, als, encrypt, decrypt, nowParts, TIMEZONES, signToken, ensureCore, withClinic, getClinic, createClinic, dropClinic } = require('./core');
+const { HttpError, route, match, readBody, parseCookies, send, SECURITY_HEADERS } = require('./http');
 const stripe = require('./stripe');
+const config = require('./config');
 
 const ON_VERCEL = !!process.env.VERCEL;
 const COOKIE_SECURE = process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === '1' : ON_VERCEL;
 const SESSION_HOURS = 10;
 const RETENTION_YEARS = 5; // prazo mínimo de guarda do prontuário
-const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 7);
+const trialDays = () => Number(config.get('TRIAL_DAYS')) || 7; // configurável na área administrativa
 const APP_URL = (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '');
 
 // ====================== Utilidades ======================
@@ -197,6 +198,19 @@ async function getSettings() {
 }
 const setSetting = (k, v) => q.run('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, v);
 
+// ====================== Consentimento para e-mails de marketing ======================
+// Registro separado do aceite dos Termos: só recebe marketing quem marcou a opção (LGPD, art. 7º, I e art. 8º).
+async function setMarketing(email, name, clinicId, optIn, source) {
+  const now = new Date().toISOString();
+  await q.run(`INSERT INTO saas.marketing_contacts(email, name, clinic_id, opt_in, source, consent_at, revoked_at) VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT (email) DO UPDATE SET name=COALESCE(excluded.name, saas.marketing_contacts.name), clinic_id=COALESCE(excluded.clinic_id, saas.marketing_contacts.clinic_id),
+      opt_in=excluded.opt_in, source=excluded.source,
+      consent_at=CASE WHEN excluded.opt_in THEN excluded.consent_at ELSE saas.marketing_contacts.consent_at END,
+      revoked_at=CASE WHEN excluded.opt_in THEN NULL ELSE excluded.revoked_at END, updated_at=now()`,
+  email, name, clinicId, optIn, source, optIn ? now : null, optIn ? null : now);
+}
+const unsubscribeUrl = (email) => `${APP_URL}/api/unsubscribe?e=${encodeURIComponent(email)}&t=${signToken('unsubscribe', email.toLowerCase())}`;
+
 // ====================== Cadastro da clínica / Autenticação ======================
 route('POST', '/api/signup', async (ctx) => {
   const b = ctx.body;
@@ -211,7 +225,7 @@ route('POST', '/api/signup', async (ctx) => {
   await ensureCore();
   if ((await sql.unsafe('SELECT 1 FROM saas.user_index WHERE email=$1', [email]))[0]) throw new HttpError(400, 'Já existe uma conta com este e-mail. Use "Entrar".');
   await failRate(rateKey, 5, 60); // no máximo 5 contas por hora por IP
-  const clinic = await createClinic({ name: clinicName, ownerEmail: email, trialDays: TRIAL_DAYS });
+  const clinic = await createClinic({ name: clinicName, ownerEmail: email, trialDays: trialDays() });
   try {
     await withClinic(clinic, async () => {
       await setSetting('clinic_name', clinicName);
@@ -222,8 +236,9 @@ route('POST', '/api/signup', async (ctx) => {
       const r = await q.run("INSERT INTO users(name,email,password_hash,role,crefito) VALUES (?,?,?,'admin',?)", name, email, hashPassword(b.password), crefito);
       const uid = Number(r.lastInsertRowid);
       await q.run('INSERT INTO saas.user_index(email, clinic_id, user_id) VALUES (?,?,?)', email, clinic.id, uid);
+      await setMarketing(email, name, clinic.id, !!b.marketing_opt_in, 'cadastro');
       ctx.user = { id: uid, name };
-      await audit(ctx, 'criou_conta', 'clinic', clinic.id, null, { clinica: clinicName, teste_dias: TRIAL_DAYS });
+      await audit(ctx, 'criou_conta', 'clinic', clinic.id, null, { clinica: clinicName, teste_dias: trialDays() });
       await createSession(ctx.res, clinic.id, uid, ctx.ip);
     });
   } catch (e) {
@@ -271,6 +286,26 @@ route('POST', '/api/logout', async (ctx) => {
 }, { always: true });
 
 route('GET', '/api/me', async (ctx) => ({ user: ctx.user, settings: await getSettings(), clinic: clinicInfo(ctx.clinic) }));
+
+route('GET', '/api/me/marketing', async (ctx) => {
+  const r = await q.get('SELECT opt_in FROM saas.marketing_contacts WHERE email=?', ctx.user.email);
+  return { opt_in: !!r?.opt_in };
+}, { always: true });
+route('PUT', '/api/me/marketing', async (ctx) => {
+  await setMarketing(ctx.user.email, ctx.user.name, ctx.clinic.id, !!ctx.body.opt_in, 'minha_conta');
+  await audit(ctx, ctx.body.opt_in ? 'aceitou_marketing' : 'recusou_marketing', 'user', ctx.user.id);
+  return { opt_in: !!ctx.body.opt_in };
+}, { always: true });
+// Link de descadastro incluído nos e-mails de marketing (sem login; o token é uma assinatura do e-mail)
+route('GET', '/api/unsubscribe', async (ctx) => {
+  const email = String(ctx.query.get('e') || '').trim().toLowerCase();
+  const token = String(ctx.query.get('t') || '');
+  const expected = email ? signToken('unsubscribe', email) : '';
+  const ok = expected && token.length === expected.length && crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+  if (ok) await sql.unsafe("UPDATE saas.marketing_contacts SET opt_in=false, revoked_at=now(), source='descadastro', updated_at=now() WHERE email=$1", [email]);
+  const msg = ok ? 'Pronto! Você não receberá mais e-mails de novidades do FisioGestão. Avisos sobre a sua conta continuam sendo enviados.' : 'Link inválido ou expirado. Você também pode desativar os e-mails de novidades em Configurações → Minha conta.';
+  return { __html: `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Descadastro — FisioGestão</title><link rel="stylesheet" href="/css/legal.css"></head><body><main><h1>E-mails de novidades</h1><p>${msg}</p><p class="back"><a href="/">Ir para o FisioGestão</a></p></main></body></html>` };
+}, { public: true });
 
 route('POST', '/api/me/password', async (ctx) => {
   const u = await q.get('SELECT * FROM users WHERE id=?', ctx.user.id);
@@ -989,6 +1024,9 @@ route('POST', '/api/stripe/webhook', async (ctx) => {
   return { received: true };
 }, { public: true, webhook: true, raw: true });
 
+// ====================== Área administrativa da plataforma ======================
+const adminArea = require('./admin')({ hashPassword, checkPassword, validatePassword, sha, DUMMY_HASH, checkRate, failRate, clearRate, clinicAccess, unsubscribeUrl, COOKIE_SECURE });
+
 // ====================== Tratamento das requisições ======================
 function clientIp(req) {
   if (ON_VERCEL) { const f = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim(); if (f) return f; }
@@ -1006,6 +1044,7 @@ async function handler(req, res) {
     if (req.method !== 'GET' && !opts.webhook && req.headers['x-requested-with'] !== 'fisio') throw new HttpError(403, 'Requisição bloqueada');
     ctx.params = m.params;
     await ensureCore(); // cria a estrutura da plataforma na primeira requisição (uma vez por instância)
+    await config.load(); // chaves de API e parâmetros da plataforma (cache de 30 s)
     if (req.method !== 'GET') {
       if (opts.raw) ctx.rawBody = await readBody(req, 1024 * 1024, true);
       else ctx.body = await readBody(req);
@@ -1042,6 +1081,10 @@ async function handler(req, res) {
         return m.route.handler(ctx);
       });
     }
+    if (out && out.__html) {
+      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(out.__html);
+    }
     if (out && out.__download) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${out.__download}"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       return res.end(out.body);
@@ -1062,6 +1105,7 @@ async function housekeeping() {
   await ensureCore();
   await sql.unsafe('DELETE FROM saas.sessions WHERE expires_at < $1', [Date.now()]);
   await sql.unsafe('DELETE FROM saas.login_attempts WHERE lock_until < $1 AND last < $2', [Date.now(), Date.now() - 24 * 3600e3]);
+  await adminArea.cleanup();
 }
 route('GET', '/api/cron/housekeeping', async (ctx) => {
   const secret = process.env.CRON_SECRET;

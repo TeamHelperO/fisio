@@ -98,6 +98,16 @@ function currentKey() {
   if (!s || !s.clinic) throw new Error('Operação de criptografia fora do contexto de uma clínica');
   return clinicKey(s.clinic);
 }
+// Subchaves derivadas da chave mestra para usos da plataforma (nunca a mesma chave para propósitos diferentes)
+const subkeyCache = new Map();
+function subkey(purpose) {
+  let k = subkeyCache.get(purpose);
+  if (!k) { k = Buffer.from(crypto.hkdfSync('sha256', masterKey(), Buffer.alloc(0), `fisiogestao:${purpose}`, 32)); subkeyCache.set(purpose, k); }
+  return k;
+}
+const sealPlatform = (text) => sealWith(subkey('platform-config'), Buffer.from(String(text), 'utf8'));
+const openPlatform = (str) => openWith(subkey('platform-config'), str).toString('utf8');
+const signToken = (purpose, value) => crypto.createHmac('sha256', subkey(purpose)).update(String(value)).digest('base64url');
 const encrypt = (obj) => sealWith(currentKey(), Buffer.from(JSON.stringify(obj), 'utf8'));
 const decrypt = (str) => JSON.parse(openWith(currentKey(), str).toString('utf8'));
 
@@ -166,6 +176,45 @@ CREATE TABLE IF NOT EXISTS saas.stripe_events (
   id text PRIMARY KEY,
   type text NOT NULL,
   received_at timestamptz NOT NULL DEFAULT now()
+);
+-- Área administrativa da plataforma (dono do SaaS) — separada dos usuários das clínicas
+CREATE TABLE IF NOT EXISTS saas.admins (
+  id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name text NOT NULL,
+  email text NOT NULL UNIQUE,
+  password_hash text NOT NULL,
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_login timestamptz
+);
+CREATE TABLE IF NOT EXISTS saas.admin_sessions (
+  token_hash text PRIMARY KEY,
+  admin_id integer NOT NULL REFERENCES saas.admins(id) ON DELETE CASCADE,
+  expires_at bigint NOT NULL,
+  ip text
+);
+CREATE TABLE IF NOT EXISTS saas.admin_audit (
+  id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  ts timestamptz NOT NULL DEFAULT now(),
+  admin_id integer, admin_name text, action text NOT NULL, target text, details text, ip text
+);
+-- Chaves de API e parâmetros da plataforma (valores cifrados com subchave da MASTER_KEY)
+CREATE TABLE IF NOT EXISTS saas.platform_config (
+  key text PRIMARY KEY,
+  value_enc text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by text
+);
+-- Contatos e consentimento para e-mails de marketing (LGPD: opt-in separado dos Termos)
+CREATE TABLE IF NOT EXISTS saas.marketing_contacts (
+  email text PRIMARY KEY,
+  name text,
+  clinic_id integer REFERENCES saas.clinics(id) ON DELETE SET NULL,
+  opt_in boolean NOT NULL DEFAULT false,
+  source text,
+  consent_at timestamptz,
+  revoked_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 `;
 
@@ -353,6 +402,6 @@ async function dropClinic(id) {
 }
 
 module.exports = {
-  sql, q, tx, als, ctxStore, encrypt, decrypt, nowParts, TIMEZONES,
+  sql, q, tx, als, ctxStore, encrypt, decrypt, nowParts, TIMEZONES, sealPlatform, openPlatform, signToken,
   ensureCore, withClinic, getClinic, createClinic, dropClinic,
 };

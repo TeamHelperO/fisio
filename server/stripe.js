@@ -2,10 +2,12 @@
 // Integração mínima com o Stripe (assinaturas), via API REST — sem SDK.
 const crypto = require('crypto');
 const { HttpError } = require('./http');
+const config = require('./config');
 
 const API = process.env.STRIPE_API_BASE || 'https://api.stripe.com'; // STRIPE_API_BASE só para testes locais
-const enabled = () => !!(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRICE_ID);
-const priceId = () => process.env.STRIPE_PRICE_ID;
+// Chaves vêm do painel administrativo (cifradas no banco) ou, na falta, das variáveis de ambiente
+const enabled = () => !!(config.get('STRIPE_SECRET_KEY') && config.get('STRIPE_PRICE_ID'));
+const priceId = () => config.get('STRIPE_PRICE_ID');
 
 function form(params, prefix = '', out = new URLSearchParams()) {
   for (const [k, v] of Object.entries(params || {})) {
@@ -17,7 +19,7 @@ function form(params, prefix = '', out = new URLSearchParams()) {
 }
 
 async function request(method, path, params, idempotencyKey) {
-  const key = process.env.STRIPE_SECRET_KEY;
+  const key = config.get('STRIPE_SECRET_KEY');
   if (!key) throw new HttpError(503, 'A cobrança ainda não foi configurada na plataforma.');
   const headers = { Authorization: `Bearer ${key}` };
   let url = API + path; let body;
@@ -35,7 +37,7 @@ async function request(method, path, params, idempotencyKey) {
 
 // Confere a assinatura do webhook (cabeçalho Stripe-Signature: t=...,v1=...)
 function verifyWebhook(raw, header, toleranceSec = 300) {
-  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  const secret = config.get('STRIPE_WEBHOOK_SECRET');
   if (!secret) throw new HttpError(503, 'Webhook não configurado');
   if (!raw || !header) throw new HttpError(400, 'Assinatura ausente');
   const parts = String(header).split(',').map((p) => p.split('='));

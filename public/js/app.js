@@ -75,6 +75,7 @@ function signupScreen() {
     password: h('input', { class: 'input', type: 'password', autocomplete: 'new-password', required: true }),
     password2: h('input', { class: 'input', type: 'password', autocomplete: 'new-password', required: true }),
     terms: h('input', { type: 'checkbox' }),
+    marketing: h('input', { type: 'checkbox' }),
   };
   const btn = h('button', { class: 'btn primary', type: 'submit' }, `Começar teste grátis de ${TRIAL_DAYS} dias`);
   const form = h('form', { class: 'auth-box stack', onsubmit: async (e) => {
@@ -83,7 +84,7 @@ function signupScreen() {
     if (!f.terms.checked) return toast('Para continuar, aceite os Termos de Uso e a Política de Privacidade', 'error');
     btn.disabled = true;
     try {
-      await post('/signup', { clinic_name: f.clinic_name.value, name: f.name.value, crefito: f.crefito.value, email: f.email.value, password: f.password.value, accept_terms: true });
+      await post('/signup', { clinic_name: f.clinic_name.value, name: f.name.value, crefito: f.crefito.value, email: f.email.value, password: f.password.value, accept_terms: true, marketing_opt_in: f.marketing.checked });
       toast('Conta criada! Bem-vindo(a) ao FisioGestão.'); location.hash = '#/configuracoes/perfil'; await boot();
     } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
   } },
@@ -95,6 +96,7 @@ function signupScreen() {
     h('label', { class: 'field' }, h('span', null, 'Senha'), f.password, h('small', { class: 'help' }, 'Mínimo de 8 caracteres, com letras e números.')),
     h('label', { class: 'field' }, h('span', null, 'Confirmar senha'), f.password2),
     h('label', { class: 'terms-check' }, f.terms, h('span', null, 'Li e aceito os ', h('a', { href: '/termos.html', target: '_blank', rel: 'noopener' }, 'Termos de Uso'), ' e a ', h('a', { href: '/privacidade.html', target: '_blank', rel: 'noopener' }, 'Política de Privacidade'), '.')),
+    h('label', { class: 'terms-check' }, f.marketing, h('span', null, 'Quero receber novidades, dicas e ofertas do FisioGestão por e-mail (opcional — dá para cancelar a qualquer momento).')),
     btn,
     h('p', { class: 'auth-switch' }, 'Já tem conta? ', h('a', { href: '#/', onclick: (e) => { e.preventDefault(); loginScreen(); } }, 'Entrar')));
   authShell(form); setTimeout(() => f.clinic_name.focus(), 50);

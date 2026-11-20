@@ -62,6 +62,11 @@ async function usuarios(body) {
 }
 
 async function seguranca(body) {
+  const mk = await get('/me/marketing').catch(() => ({ opt_in: false }));
+  const mkBox = h('input', { type: 'checkbox', checked: mk.opt_in, onchange: async () => {
+    try { await put('/me/marketing', { opt_in: mkBox.checked }); toast(mkBox.checked ? 'Você vai receber as novidades por e-mail' : 'Você não vai mais receber e-mails de novidades'); }
+    catch (e) { mkBox.checked = !mkBox.checked; toast(e.message, 'error'); }
+  } });
   const form = buildForm([
     { key: 'current', label: 'Senha atual', type: 'password', required: true, autocomplete: 'current-password' },
     { key: 'password', label: 'Nova senha', type: 'password', required: true, autocomplete: 'new-password', help: 'Mínimo 8 caracteres, com letras e números.' },
@@ -79,7 +84,9 @@ async function seguranca(body) {
         ['Login individual com senha protegida por hash (scrypt)', 'Bloqueio temporário após 5 tentativas de login incorretas', 'Sessão expira após 10 horas de inatividade',
           'Registros clínicos criptografados no banco (AES-256-GCM)', 'Controle de acesso por perfil e por profissional responsável',
           'Registro de acessos e alterações (auditoria) com histórico de versões dos registros clínicos', 'Dados de cada clínica isolados em área própria do banco, com chave de criptografia própria', 'Cópias de segurança diárias do banco de dados + cópia criptografada antes de excluir pacientes',
-          'Proteções contra XSS, CSRF e clickjacking (cabeçalhos de segurança)'].map((t) => h('li', null, t)))))));
+          'Proteções contra XSS, CSRF e clickjacking (cabeçalhos de segurança)'].map((t) => h('li', null, t)))))),
+    h('div', { class: 'card', style: { marginTop: '16px' } }, h('div', { class: 'card-head' }, h('h2', null, 'Comunicação')), h('div', { class: 'card-body' },
+      h('label', { class: 'terms-check', style: { color: 'var(--text)', fontSize: '14px' } }, mkBox, h('span', null, 'Receber novidades, dicas e ofertas do FisioGestão por e-mail. ', h('small', null, 'Avisos sobre a sua conta e a assinatura continuam sendo enviados.'))))));
 }
 
 async function lgpd(body) {

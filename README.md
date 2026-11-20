@@ -21,9 +21,19 @@ Cada clínica cria a própria conta em **/#/criar-conta**, ganha **7 dias gráti
 ### Desenvolvimento local
 Requisito: **Node.js 22.13+**. Copie `.env.example` para `.env`, preencha `DATABASE_URL` (um projeto Supabase de desenvolvimento ou qualquer Postgres) e `MASTER_KEY`, rode `npm install` e `npm run dev`. Acesse http://localhost:3000.
 
-### Administração da plataforma
-Não há painel do dono da plataforma ainda. Para suspender ou liberar uma clínica manualmente, use o SQL do Supabase:
-`UPDATE saas.clinics SET manual_access = 'blocked' WHERE id = 123;` (`'full'`, `'readonly'` ou `NULL` para voltar ao automático).
+### Administração da plataforma (`/admin`)
+Área do dono do SaaS, separada do sistema das clínicas, com login próprio:
+
+- **Dashboard:** clínicas, testes grátis (e quais terminam em 3 dias), assinantes, conversão, MRR, cadastros dos últimos 30 dias.
+- **Clínicas:** situação de cada conta, contagens agregadas (usuários, pacientes, atendimentos em 30 dias); estender teste grátis, liberar, deixar em somente leitura ou suspender.
+- **Financeiro:** MRR, assinaturas e faturas pagas, lidos do Stripe.
+- **Usuários e marketing:** todos os usuários das clínicas e quem aceitou receber marketing; exporta CSV **só com quem consentiu**, com link de descadastro de cada contato.
+- **APIs e integrações:** chaves do Stripe e do Resend, e-mail de suporte e dias de teste — guardadas cifradas no banco (têm prioridade sobre as variáveis de ambiente).
+- **Administradores** e **registro de ações**.
+
+O painel **não dá acesso** a prontuários, cadastros de pacientes ou dados financeiros dos pacientes.
+
+**Primeiro acesso:** cadastre na Vercel a variável `ADMIN_SETUP_TOKEN` (um código longo e aleatório), faça um novo deploy e abra `/admin`. Informe esse código para criar o primeiro administrador (senha com 12+ caracteres). Depois disso o código não é mais aceito e pode ser removido.
 
 ## Módulos
 
