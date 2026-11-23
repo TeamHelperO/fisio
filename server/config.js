@@ -11,8 +11,14 @@ const FIELDS = {
   MP_ACCESS_TOKEN: { group: 'Mercado Pago', label: 'Access Token (APP_USR-… ou TEST-…)', secret: true, pattern: /^(APP_USR|TEST)-[A-Za-z0-9-]{10,}$/ },
   MP_PRICE: { group: 'Mercado Pago', label: 'Valor da assinatura mensal em R$ (ex.: 79,90)', pattern: /^\d{1,5}([.,]\d{1,2})?$/ },
   MP_WEBHOOK_SECRET: { group: 'Mercado Pago', label: 'Assinatura secreta das notificações (webhook)', secret: true, pattern: /^[A-Za-z0-9]{16,128}$/ },
-  RESEND_API_KEY: { group: 'E-mail (Resend)', label: 'Chave de API do Resend (re_…)', secret: true, pattern: /^re_[A-Za-z0-9_]+$/ },
-  EMAIL_FROM: { group: 'E-mail (Resend)', label: 'Remetente (ex.: FisioGestão <contato@seudominio.com.br>)', pattern: /^.{3,200}$/ },
+  EMAIL_FROM: { group: 'E-mail', label: 'Remetente (ex.: FisioGestão <contato@seudominio.com.br>)', pattern: /^([^\r\n<>]{0,100}<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>|[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+)$/ },
+  SMTP_HOST: { group: 'E-mail (SMTP)', label: 'Servidor SMTP (ex.: smtp.gmail.com, smtp.office365.com)', pattern: /^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/ },
+  SMTP_PORT: { group: 'E-mail (SMTP)', label: 'Porta (587 para STARTTLS, 465 para SSL)', pattern: /^([1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$/ },
+  SMTP_SECURITY: { group: 'E-mail (SMTP)', label: 'Segurança da conexão', pattern: /^(starttls|ssl|nenhuma)$/,
+    options: [['starttls', 'STARTTLS (porta 587) — recomendado'], ['ssl', 'SSL/TLS direto (porta 465)'], ['nenhuma', 'Sem criptografia (não recomendado)']] },
+  SMTP_USER: { group: 'E-mail (SMTP)', label: 'Usuário (geralmente o e-mail da conta)', pattern: /^[^\r\n]{1,200}$/ },
+  SMTP_PASS: { group: 'E-mail (SMTP)', label: 'Senha ou senha de app', secret: true, maskAll: true, pattern: /^[^\r\n]{1,300}$/ },
+  RESEND_API_KEY: { group: 'E-mail (Resend)', label: 'Chave de API do Resend (re_…) — usada só se o SMTP não estiver configurado', secret: true, pattern: /^re_[A-Za-z0-9_]+$/ },
   SUPPORT_EMAIL: { group: 'Geral', label: 'E-mail de suporte exibido aos clientes', pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/ },
   TRIAL_DAYS: { group: 'Geral', label: 'Dias de teste grátis para novas clínicas', pattern: /^([1-9]|[1-8][0-9]|90)$/ },
 };
@@ -35,16 +41,17 @@ function get(key) {
   const v = cache?.[key]?.value;
   return v !== undefined && v !== '' ? v : process.env[key] || '';
 }
-function mask(v) { return v.length <= 8 ? '••••' : `${v.slice(0, 7)}…${v.slice(-4)}`; }
+// chaves de API: mostra o começo e o fim para identificar; senhas: nada
+function mask(v, all) { return all || v.length <= 8 ? '••••••••' : `${v.slice(0, 7)}…${v.slice(-4)}`; }
 // Visão para a tela de administração (sem expor segredos)
 function describe() {
   return Object.entries(FIELDS).map(([key, f]) => {
     const db = cache?.[key];
     const value = get(key);
     return {
-      key, group: f.group, label: f.label, secret: !!f.secret,
+      key, group: f.group, label: f.label, secret: !!f.secret, options: f.options || null,
       source: db?.value ? 'painel' : process.env[key] ? 'variável de ambiente' : null,
-      display: value ? (f.secret ? mask(value) : value) : '',
+      display: value ? (f.secret ? mask(value, f.maskAll) : value) : '',
       updated_at: db?.updated_at || null, updated_by: db?.updated_by || null,
     };
   });

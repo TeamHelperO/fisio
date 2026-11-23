@@ -10,6 +10,7 @@ const { HttpError, route, parseCookies } = require('./http');
 const config = require('./config');
 const stripe = require('./stripe');
 const mp = require('./mercadopago');
+const mailer = require('./mailer');
 
 const SESSION_HOURS = 4;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -282,6 +283,33 @@ module.exports = function registerAdmin(deps) {
     if (key.startsWith('STRIPE_')) finCache = null;
     if (key.startsWith('MP_')) mpCache = null;
     return config.describe();
+  });
+
+  // ---------- E-mail (SMTP / Resend): situação e envio de teste ----------
+  adminRoute('GET', '/api/admin/email/status', async () => mailer.status());
+  adminRoute('POST', '/api/admin/email/test', async (ctx) => {
+    const to = String(ctx.body.to || ctx.admin.email).trim();
+    if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(to) || to.length > 200) throw new HttpError(400, 'Informe um e-mail válido');
+    const st = mailer.status();
+    try {
+      const r = await mailer.send({
+        to, subject: 'Teste de e-mail — FisioGestão',
+        text: `Olá!
+
+Este é um e-mail de teste enviado pelo painel da plataforma FisioGestão.
+Serviço: ${st.detail || st.provider}
+Enviado por: ${ctx.admin.name}
+
+Se você recebeu esta mensagem, o envio de e-mails está funcionando.`,
+        html: `<p>Olá!</p><p>Este é um e-mail de teste enviado pelo painel da plataforma <b>FisioGestão</b>.</p><p>Serviço: ${String(st.detail || st.provider).replace(/[<>&]/g, '')}</p><p>Se você recebeu esta mensagem, o envio de e-mails está funcionando. ✅</p>`,
+      });
+      await log(ctx, 'testou_email', to, { servico: r.provider });
+      return { ok: true, ...r };
+    } catch (e) {
+      await log(ctx, 'teste_email_falhou', to, { erro: String(e.message).slice(0, 200) });
+      if (e instanceof mailer.MailError) throw new HttpError(502, e.message);
+      throw e;
+    }
   });
 
   // ---------- Usuários das clínicas e contatos de marketing ----------

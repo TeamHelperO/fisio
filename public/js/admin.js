@@ -249,11 +249,13 @@ async function usuarios(view) {
 
 // ---------------- APIs e integrações ----------------
 async function apis(view) {
-  const fields = await get(A('/config'));
+  const [fields, mail] = await Promise.all([get(A('/config')), get(A('/email/status'))]);
   const groups = {};
   for (const f of fields) (groups[f.group] ||= []).push(f);
   const edit = (f) => {
-    const input = h('input', { class: 'input', type: f.secret ? 'password' : 'text', autocomplete: 'off', placeholder: f.secret ? 'Cole o novo valor' : '', value: f.secret ? '' : f.display || '' });
+    const input = f.options
+      ? h('select', { class: 'input' }, h('option', { value: '' }, 'Selecione…'), f.options.map(([v, l]) => h('option', { value: v, selected: f.display === v }, l)))
+      : h('input', { class: 'input', type: f.secret ? 'password' : 'text', autocomplete: f.secret ? 'new-password' : 'off', placeholder: f.secret ? 'Cole o novo valor' : '', value: f.secret ? '' : f.display || '' });
     const m = modal({ title: f.label, body: h('div', { class: 'stack' }, h('label', { class: 'field' }, h('span', null, f.key), input,
       h('small', { class: 'help' }, f.secret ? 'O valor é guardado cifrado e nunca é exibido de novo por inteiro.' : 'Deixe em branco e salve para remover o valor do painel.')),
     f.source === 'variável de ambiente' ? h('div', { class: 'notice info' }, icon('settings'), 'Hoje este valor vem de uma variável de ambiente da Vercel. Um valor salvo aqui passa a ter prioridade.') : null),
@@ -261,7 +263,24 @@ async function apis(view) {
       f.source === 'painel' ? h('button', { class: 'btn ghost', style: { marginRight: 'auto' }, onclick: async () => { try { await put(A('/config'), { key: f.key, value: '' }); toast('Valor removido do painel'); m.close(); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Remover') : null,
       h('button', { class: 'btn primary', onclick: async () => { try { await put(A('/config'), { key: f.key, value: input.value }); toast('Configuração salva'); m.close(); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Salvar')] });
   };
-  view.append(head('APIs e integrações', 'Chaves e parâmetros usados pela plataforma'),
+  const to = h('input', { class: 'input', type: 'email', value: me?.email || '', style: { maxWidth: '280px' }, 'aria-label': 'Enviar teste para' });
+  const testBtn = h('button', { class: 'btn', disabled: !mail.provider }, icon('check', 15), 'Enviar e-mail de teste');
+  const result = h('div');
+  testBtn.onclick = async () => {
+    testBtn.disabled = true; result.replaceChildren(h('small', { class: 'muted' }, 'Enviando…'));
+    try {
+      const r = await post(A('/email/test'), { to: to.value });
+      result.replaceChildren(h('div', { class: 'notice info' }, icon('check'), h('span', null, `Enviado via ${r.provider === 'smtp' ? 'SMTP' : 'Resend'}. Confira a caixa de entrada (e o spam) de ${to.value}.`, r.response ? h('small', { style: { display: 'block' } }, `Resposta do servidor: ${r.response}`) : null)));
+    } catch (e) { result.replaceChildren(h('div', { class: 'notice' }, icon('alert'), h('span', null, e.message))); }
+    testBtn.disabled = false;
+  };
+  const mailCard = card('Envio de e-mails', h('div', { class: 'card-body stack' },
+    h('p', { style: { margin: 0 } }, h('b', null, 'Situação: '), mail.provider
+      ? [pill('green', mail.provider === 'smtp' ? 'SMTP' : 'Resend'), ' ', mail.detail || '', mail.from ? h('div', null, h('small', { class: 'muted' }, `Remetente: ${mail.from}`)) : h('div', null, h('small', { class: 'muted' }, 'Falta configurar o remetente (EMAIL_FROM).'))]
+      : [pill('gray', 'não configurado'), ' Preencha o servidor SMTP abaixo (ou a chave do Resend).']),
+    h('small', { class: 'help' }, 'Gmail/Google Workspace: smtp.gmail.com, porta 587, STARTTLS, com uma "senha de app". Outlook/Microsoft 365: smtp.office365.com, 587, STARTTLS. Hostinger/Locaweb/KingHost: use os dados do seu provedor.'),
+    h('div', { class: 'row' }, to, testBtn), result));
+  view.append(head('APIs e integrações', 'Chaves e parâmetros usados pela plataforma'), mailCard,
     h('div', { class: 'notice info', style: { marginBottom: '16px' } }, icon('shield'), h('div', null, 'As chaves ficam cifradas no banco de dados (com uma subchave da MASTER_KEY) e não aparecem na tela nem no registro de ações. Webhooks: Stripe → ', h('code', null, `${location.origin}/api/stripe/webhook`), ' · Mercado Pago (evento "Planos e assinaturas") → ', h('code', null, `${location.origin}/api/mercadopago/webhook`), '.')),
     h('div', { class: 'stack' }, Object.entries(groups).map(([g, fs]) => card(g, table(['Configuração', 'Valor atual', 'Origem', 'Atualizado', ''], fs.map((f) => h('tr', null,
       h('td', null, h('b', null, f.label), h('div', null, h('small', null, f.key))), h('td', null, f.display ? h('code', null, f.display) : pill('gray', 'não configurado')),
