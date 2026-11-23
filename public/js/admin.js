@@ -222,10 +222,11 @@ async function usuarios(view) {
   const render = () => {
     const t = search.value.trim().toLowerCase();
     const rows = list.filter((u) => (!t || `${u.name} ${u.email} ${u.clinic}`.toLowerCase().includes(t)) && (only.value !== 'mk' || u.marketing) && (only.value !== 'owner' || u.owner));
-    wrap.replaceChildren(rows.length ? table(['Nome', 'E-mail', 'Clínica', 'Perfil', 'Último acesso', 'Marketing'], rows.map((u) => h('tr', null,
+    wrap.replaceChildren(rows.length ? table(['Nome', 'E-mail', 'Clínica', 'Perfil', 'Último acesso', 'Marketing', 'E-mail'], rows.map((u) => h('tr', null,
       h('td', null, h('b', null, u.name), u.owner ? h('div', null, h('small', null, 'Responsável pela conta')) : null), h('td', null, u.email), h('td', null, u.clinic),
       h('td', null, ROLE[u.role] || u.role, u.active ? null : h('div', null, pill('gray', 'inativo'))), h('td', { class: 'nowrap' }, u.last_login ? fmtDT(u.last_login.replace(' ', 'T')) : 'Nunca'),
-      h('td', null, u.marketing ? pill('green', `Sim · ${fmtDay(u.consent_at)}`) : pill('gray', 'Não'))))) : empty('Nenhum usuário encontrado.'));
+      h('td', null, u.marketing ? pill('green', `Sim · ${fmtDay(u.consent_at)}`) : pill('gray', 'Não')),
+      h('td', null, u.email_verified ? pill('green', 'Confirmado') : pill('amber', 'Pendente'))))) : empty('Nenhum usuário encontrado.'));
   };
   const exportCsv = async (e) => {
     const b = e.currentTarget; b.disabled = true;

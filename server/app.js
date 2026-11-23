@@ -114,17 +114,18 @@ async function dropSessions(clinicId, userId) {
 }
 
 // Limite de tentativas (força bruta / abuso), guardado no banco — funciona com várias instâncias serverless
+// usa a conexão da requisição quando houver (dentro da transação da clínica) — evita disputar outra conexão
 async function checkRate(key) {
-  const a = (await sql.unsafe('SELECT lock_until FROM saas.login_attempts WHERE key=$1', [key]))[0];
+  const a = (await currentSql().unsafe('SELECT lock_until FROM saas.login_attempts WHERE key=$1', [key]))[0];
   if (a && a.lock_until > Date.now()) throw new HttpError(429, `Muitas tentativas. Tente novamente em ${Math.ceil((a.lock_until - Date.now()) / 60000)} min.`);
 }
 async function failRate(key, max = 5, lockMin = 15) {
   const now = Date.now();
-  await sql.unsafe(`INSERT INTO saas.login_attempts(key, n, last) VALUES ($1, 1, $2)
+  await currentSql().unsafe(`INSERT INTO saas.login_attempts(key, n, last) VALUES ($1, 1, $2)
     ON CONFLICT (key) DO UPDATE SET n = CASE WHEN saas.login_attempts.last < $2 - 3600000 THEN 1 ELSE saas.login_attempts.n + 1 END, last = $2`, [key, now]);
-  await sql.unsafe('UPDATE saas.login_attempts SET lock_until=$2, n=0 WHERE key=$1 AND n >= $3', [key, now + lockMin * 60e3, max]);
+  await currentSql().unsafe('UPDATE saas.login_attempts SET lock_until=$2, n=0 WHERE key=$1 AND n >= $3', [key, now + lockMin * 60e3, max]);
 }
-async function clearRate(key) { await sql.unsafe('DELETE FROM saas.login_attempts WHERE key=$1', [key]); }
+async function clearRate(key) { await currentSql().unsafe('DELETE FROM saas.login_attempts WHERE key=$1', [key]); }
 
 // ====================== Assinatura (acesso da clínica) ======================
 // full = uso normal · readonly = teste/assinatura vencidos (consulta e exportação liberadas) · blocked = suspensa pela plataforma
@@ -253,7 +254,9 @@ route('POST', '/api/signup', async (ctx) => {
     if (e.code === '23505') throw new HttpError(400, 'Já existe uma conta com este e-mail. Use "Entrar".');
     throw e;
   }
-  return { ok: true };
+  const owner = (await sql.unsafe('SELECT user_id FROM saas.user_index WHERE email=$1', [email]))[0];
+  const sent = owner ? await sendVerification(clinic, { id: owner.user_id, name, email }) : false;
+  return { ok: true, verification_sent: sent, email };
 }, { public: true });
 
 route('POST', '/api/login', async (ctx) => {
@@ -387,6 +390,67 @@ route('POST', '/api/password/reset', async (ctx) => {
   return { ok: true };
 }, { public: true });
 
+// ====================== Confirmação de e-mail ======================
+// Enviada no cadastro, quando o administrador da clínica cria um usuário e quando o e-mail de um usuário muda.
+// Link de uso único, válido por 48 horas. Contas criadas antes desta função já contam como confirmadas.
+const VERIFY_TTL_H = 48;
+async function sendVerification(clinic, user, { invitedBy = null } = {}) {
+  const db = currentSql();
+  const token = crypto.randomBytes(32).toString('base64url');
+  await db.unsafe('DELETE FROM saas.email_verifications WHERE clinic_id=$1 AND user_id=$2', [clinic.id, user.id]); // só o link mais recente vale
+  await db.unsafe('INSERT INTO saas.email_verifications(token_hash, clinic_id, user_id, email, expires_at) VALUES ($1,$2,$3,$4,$5)',
+    [sha(token), clinic.id, user.id, user.email, Date.now() + VERIFY_TTL_H * 3600e3]);
+  const url = `${APP_URL}/#/confirmar-email?t=${token}`;
+  const intro = invitedBy
+    ? `${invitedBy} cadastrou você no FisioGestão da clínica ${clinic.name}.`
+    : `Sua conta no FisioGestão (${clinic.name}) foi criada. Falta só confirmar que este e-mail é seu.`;
+  try {
+    await mailer.send({
+      to: user.email, subject: 'Confirme seu e-mail — FisioGestão',
+      text: `Olá, ${user.name}!\n\n${intro}\n\nConfirme seu e-mail abrindo o link abaixo (vale por ${VERIFY_TTL_H} horas):\n${url}\n\nSe você não reconhece este cadastro, ignore esta mensagem.`,
+      html: mailLayout('Confirme seu e-mail', [`Olá, ${escHtml(user.name)}!`, escHtml(intro),
+        `O link vale por <b>${VERIFY_TTL_H} horas</b>. Se você não reconhece este cadastro, ignore esta mensagem.`], { url, label: 'Confirmar meu e-mail' }),
+    });
+    return true;
+  } catch (e) {
+    console.error('Confirmação de e-mail não enviada', e.message);
+    return false;
+  }
+}
+async function emailVerified(clinicId, userId) {
+  const r = (await currentSql().unsafe('SELECT email_verified_at FROM saas.user_index WHERE clinic_id=$1 AND user_id=$2', [clinicId, userId]))[0];
+  return !!r?.email_verified_at;
+}
+
+route('POST', '/api/email/verify', async (ctx) => {
+  await ensureCore();
+  const key = `verify|${ctx.ip}`;
+  await checkRate(key);
+  const token = ctx.body.token;
+  const invalid = 'Este link de confirmação não é válido ou expirou. Entre no sistema e clique em "Reenviar link".';
+  if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,60}$/.test(token)) { await failRate(key, 10, 30); throw new HttpError(400, invalid); }
+  const r = (await sql.unsafe('SELECT * FROM saas.email_verifications WHERE token_hash=$1', [sha(token)]))[0];
+  if (!r || Number(r.expires_at) < Date.now()) { await failRate(key, 10, 30); throw new HttpError(400, invalid); }
+  if (r.used_at) return { ok: true, email: r.email, already: true };
+  // confirma só se o e-mail do usuário ainda for o mesmo do link
+  const upd = await sql.unsafe('UPDATE saas.user_index SET email_verified_at=now() WHERE clinic_id=$1 AND user_id=$2 AND email=$3 RETURNING email', [r.clinic_id, r.user_id, r.email]);
+  if (!upd.length) throw new HttpError(400, 'O e-mail desta conta foi alterado depois do envio deste link. Use o link mais recente.');
+  await sql.unsafe('UPDATE saas.email_verifications SET used_at=now() WHERE token_hash=$1', [r.token_hash]);
+  const clinic = await getClinic(r.clinic_id);
+  if (clinic) await withClinic(clinic, () => { ctx.user = null; return audit(ctx, 'confirmou_email', 'user', r.user_id, null, { email: r.email }); });
+  return { ok: true, email: r.email };
+}, { public: true });
+
+route('POST', '/api/email/resend', async (ctx) => {
+  if (await emailVerified(ctx.clinic.id, ctx.user.id)) throw new HttpError(400, 'Seu e-mail já está confirmado.');
+  const key = `resend|${ctx.clinic.id}|${ctx.user.id}`;
+  await checkRate(key);
+  await failRate(key, 3, 60);
+  const sent = await sendVerification(ctx.clinic, ctx.user);
+  if (!sent) throw new HttpError(503, 'Não foi possível enviar o e-mail agora. Tente novamente mais tarde.');
+  return { ok: true, email: ctx.user.email };
+}, { always: true });
+
 route('POST', '/api/logout', async (ctx) => {
   const token = parseCookies(ctx.req).fisio_sid;
   if (token) await q.run('DELETE FROM saas.sessions WHERE token_hash=?', sha(token));
@@ -395,7 +459,7 @@ route('POST', '/api/logout', async (ctx) => {
   return { ok: true };
 }, { always: true });
 
-route('GET', '/api/me', async (ctx) => ({ user: ctx.user, settings: await getSettings(), clinic: clinicInfo(ctx.clinic) }));
+route('GET', '/api/me', async (ctx) => ({ user: { ...ctx.user, email_verified: await emailVerified(ctx.clinic.id, ctx.user.id) }, settings: await getSettings(), clinic: clinicInfo(ctx.clinic) }));
 
 route('GET', '/api/me/marketing', async (ctx) => {
   const r = await q.get('SELECT opt_in FROM saas.marketing_contacts WHERE email=?', ctx.user.email);
@@ -447,7 +511,8 @@ route('POST', '/api/users', async (ctx) => {
   const id = Number(r.lastInsertRowid);
   await q.run('INSERT INTO saas.user_index(email, clinic_id, user_id) VALUES (?,?,?)', email, ctx.clinic.id, id);
   await audit(ctx, 'criou', 'user', id, null, { email, role: b.role });
-  return { id };
+  const sent = await sendVerification(ctx.clinic, { id, name: b.name, email }, { invitedBy: ctx.user.name });
+  return { id, verification_sent: sent };
 });
 route('PUT', '/api/users/:id', async (ctx) => {
   requireRole(ctx.user, ['admin']);
@@ -460,10 +525,11 @@ route('PUT', '/api/users/:id', async (ctx) => {
   if (email !== u.email && !(await emailFree(email, id))) throw new HttpError(400, 'Este e-mail já é usado por outro usuário do FisioGestão');
   await q.run('UPDATE users SET name=?, email=?, role=?, crefito=?, active=? WHERE id=?',
     reqStr(b.name ?? u.name, 'Nome', 120), email, role, str(b.crefito ?? u.crefito, 40), active, id);
-  if (email !== u.email) await q.run('UPDATE saas.user_index SET email=? WHERE clinic_id=? AND user_id=?', email, ctx.clinic.id, id);
+  if (email !== u.email) await q.run('UPDATE saas.user_index SET email=?, email_verified_at=NULL WHERE clinic_id=? AND user_id=?', email, ctx.clinic.id, id);
   if (b.password) { validatePassword(b.password); await q.run('UPDATE users SET password_hash=? WHERE id=?', hashPassword(b.password), id); }
   if (!active || b.password) await dropSessions(ctx.clinic.id, id);
   await audit(ctx, 'alterou', 'user', id, null, { role, active, senha_redefinida: !!b.password });
+  if (email !== u.email && active) await sendVerification(ctx.clinic, { id, name: b.name ?? u.name, email }, { invitedBy: ctx.user.name });
   return { ok: true };
 });
 
@@ -1472,6 +1538,7 @@ async function housekeeping() {
   await sql.unsafe('DELETE FROM saas.sessions WHERE expires_at < $1', [Date.now()]);
   await sql.unsafe('DELETE FROM saas.login_attempts WHERE lock_until < $1 AND last < $2', [Date.now(), Date.now() - 24 * 3600e3]);
   await sql.unsafe('DELETE FROM saas.password_resets WHERE expires_at < $1', [Date.now() - 24 * 3600e3]);
+  await sql.unsafe('DELETE FROM saas.email_verifications WHERE expires_at < $1', [Date.now() - 7 * 24 * 3600e3]);
   await adminArea.cleanup();
 }
 route('GET', '/api/cron/housekeeping', async (ctx) => {

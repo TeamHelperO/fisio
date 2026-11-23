@@ -52,7 +52,7 @@ async function usuarios(body) {
       u.id && u.id !== state.user.id ? h('button', { class: 'btn ghost', style: { marginRight: 'auto' }, onclick: async () => { try { await put(`/users/${u.id}`, { active: !u.active }); m.close(); toast(u.active ? 'Usuário desativado' : 'Usuário reativado'); refresh(); } catch (e) { toast(e.message, 'error'); } } }, u.active ? 'Desativar acesso' : 'Reativar acesso') : null,
       h('button', { class: 'btn primary', onclick: async () => {
         if (!form.validate()) return; const v = form.getValues(); if (!v.password) delete v.password;
-        try { u.id ? await put(`/users/${u.id}`, v) : await post('/users', v); m.close(); toast('Usuário salvo'); state.professionals = (await get('/users')).filter((x) => x.role !== 'recepcao' && x.active); refresh(); } catch (e) { toast(e.message, 'error'); }
+        try { const r = u.id ? await put(`/users/${u.id}`, v) : await post('/users', v); m.close(); toast(r?.verification_sent ? `Usuário salvo. Enviamos um link de confirmação para ${v.email}.` : 'Usuário salvo'); state.professionals = (await get('/users')).filter((x) => x.role !== 'recepcao' && x.active); refresh(); } catch (e) { toast(e.message, 'error'); }
       } }, 'Salvar')] });
   };
   body.append(h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Usuários'), h('button', { class: 'btn primary sm', onclick: () => edit() }, icon('plus', 15), 'Novo usuário')),

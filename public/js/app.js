@@ -140,8 +140,8 @@ function signupScreen() {
     if (!f.terms.checked) return toast('Para continuar, aceite os Termos de Uso e a Política de Privacidade', 'error');
     btn.disabled = true;
     try {
-      await post('/signup', { clinic_name: f.clinic_name.value, name: f.name.value, crefito: f.crefito.value, email: f.email.value, password: f.password.value, accept_terms: true, marketing_opt_in: f.marketing.checked });
-      toast('Conta criada! Bem-vindo(a) ao FisioGestão.'); location.hash = '#/configuracoes/perfil'; await boot();
+      const r = await post('/signup', { clinic_name: f.clinic_name.value, name: f.name.value, crefito: f.crefito.value, email: f.email.value, password: f.password.value, accept_terms: true, marketing_opt_in: f.marketing.checked });
+      toast(r.verification_sent ? `Conta criada! Enviamos um link de confirmação para ${r.email}.` : 'Conta criada! Bem-vindo(a) ao FisioGestão.'); location.hash = '#/configuracoes/perfil'; await boot();
     } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
   } },
     h('div', null, h('h2', null, 'Crie sua conta'), h('p', null, `${TRIAL_DAYS} dias grátis, sem cartão de crédito. Depois, assine para continuar registrando — seus dados ficam sempre disponíveis para consulta.`)),
@@ -159,6 +159,35 @@ function signupScreen() {
 }
 
 // Aviso de teste grátis / assinatura no topo do sistema
+// Aviso de e-mail ainda não confirmado (com botão para reenviar o link)
+function verifyBanner() {
+  if (DEMO || !state.user || state.user.email_verified !== false) return null;
+  const btn = h('button', { class: 'btn sm' }, 'Reenviar link');
+  const bar = h('div', { class: 'billing-banner' }, icon('alert', 16),
+    h('span', null, h('b', null, 'Confirme seu e-mail. '), `Enviamos um link de confirmação para ${state.user.email}. Não chegou? Confira o spam ou peça de novo.`), btn);
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try { const r = await post('/email/resend'); toast(`Link enviado para ${r.email}`); btn.textContent = 'Enviado'; }
+    catch (e) { toast(e.message, 'error'); btn.disabled = false; }
+  };
+  return bar;
+}
+
+// Link do e-mail de confirmação: #/confirmar-email?t=...
+async function confirmEmailScreen(token) {
+  history.replaceState(null, '', '#/confirmar-email'); // tira o código da barra de endereço
+  let ok = false; let msg;
+  try { const r = await post('/email/verify', { token }); ok = true; msg = `O e-mail ${r.email} foi confirmado. Obrigado!`; }
+  catch (e) { msg = e.message; }
+  let logged = false;
+  try { await loadSession(); logged = true; } catch { /* sem sessão neste navegador */ }
+  const go2 = () => { history.replaceState(null, '', '#/dashboard'); if (logged) { shell = null; router(); } else loginScreen(); };
+  authShell(h('div', { class: 'auth-box stack' },
+    h('div', null, h('h2', null, ok ? 'E-mail confirmado' : 'Não foi possível confirmar')),
+    h('div', { class: `notice ${ok ? 'info' : ''}` }, icon(ok ? 'check' : 'alert'), h('span', null, msg)),
+    h('button', { class: 'btn primary', onclick: go2 }, logged ? 'Ir para o sistema' : 'Entrar')));
+}
+
 function billingBanner() {
   const c = state.clinic; if (!c || DEMO) return null;
   const a = c.access; const admin = state.user.role === 'admin';
@@ -199,6 +228,7 @@ function buildShell() {
     h('div', { class: 'main' },
       h('header', { class: 'topbar' }, h('button', { class: 'icon-btn', 'aria-label': 'Abrir menu', onclick: () => app.classList.toggle('menu-open') }, icon('menu', 22)), h('b', null, 'FisioGestão')),
       DEMO ? h('div', { class: 'demo-banner' }, h('span', null, h('b', null, 'Demonstração'), ' · dados fictícios, salvos só neste navegador. Não insira dados reais de pacientes.'), h('button', { class: 'btn sm', onclick: resetDemo }, 'Restaurar dados de exemplo')) : null,
+      verifyBanner(),
       billingBanner(),
       content));
   app.addEventListener('click', (e) => { if (app.classList.contains('menu-open') && e.target === app) app.classList.remove('menu-open'); });
@@ -287,6 +317,10 @@ async function boot() {
     if (t) return resetScreen(t);
   }
   if (!DEMO && route === 'esqueci-senha') return forgotScreen();
+  if (!DEMO && route.startsWith('confirmar-email?')) {
+    const t = new URLSearchParams(route.split('?')[1]).get('t');
+    if (t) return confirmEmailScreen(t);
+  }
   try {
     await loadSession();
     shell = null; router();

@@ -316,6 +316,7 @@ Se você recebeu esta mensagem, o envio de e-mails está funcionando.`,
   adminRoute('GET', '/api/admin/users', async () => {
     const clinics = await sql.unsafe('SELECT * FROM saas.clinics ORDER BY name');
     const mk = Object.fromEntries((await sql.unsafe('SELECT * FROM saas.marketing_contacts')).map((r) => [r.email, r]));
+    const verified = Object.fromEntries((await sql.unsafe('SELECT email, email_verified_at FROM saas.user_index')).map((r) => [r.email, r.email_verified_at]));
     const out = [];
     for (const c of clinics) {
       let users = [];
@@ -328,7 +329,7 @@ Se você recebeu esta mensagem, o envio de e-mails está funcionando.`,
       const access = clinicAccess(c);
       for (const u of users) {
         const m = mk[u.email];
-        out.push({ ...u, clinic_id: c.id, clinic: c.name, clinic_status: access.mode === 'full' ? access.reason : access.mode, owner: u.email === c.owner_email, marketing: !!m?.opt_in, consent_at: m?.consent_at || null });
+        out.push({ ...u, clinic_id: c.id, clinic: c.name, clinic_status: access.mode === 'full' ? access.reason : access.mode, owner: u.email === c.owner_email, marketing: !!m?.opt_in, consent_at: m?.consent_at || null, email_verified: !!verified[u.email] });
       }
     }
     return out;

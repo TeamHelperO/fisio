@@ -227,6 +227,19 @@ CREATE TABLE IF NOT EXISTS saas.password_resets (
   ip text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+-- Confirmação de e-mail. Na primeira vez a coluna nasce preenchida (contas antigas = confirmadas);
+-- depois o padrão é removido e contas novas começam sem confirmação.
+ALTER TABLE saas.user_index ADD COLUMN IF NOT EXISTS email_verified_at timestamptz DEFAULT now();
+ALTER TABLE saas.user_index ALTER COLUMN email_verified_at DROP DEFAULT;
+CREATE TABLE IF NOT EXISTS saas.email_verifications (
+  token_hash text PRIMARY KEY,
+  clinic_id integer NOT NULL REFERENCES saas.clinics(id) ON DELETE CASCADE,
+  user_id integer NOT NULL,
+  email text NOT NULL,
+  expires_at bigint NOT NULL,
+  used_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 -- Mercado Pago (assinaturas "preapproval") como segunda forma de pagamento
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS billing_provider text;
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS mp_preapproval_id text;
