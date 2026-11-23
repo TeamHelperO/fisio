@@ -54,9 +54,62 @@ function loginScreen() {
     h('label', { class: 'field' }, h('span', null, 'E-mail'), email),
     h('label', { class: 'field' }, h('span', null, 'Senha'), pw),
     btn,
+    DEMO ? null : h('p', { class: 'auth-switch', style: { marginTop: '10px' } }, h('a', { href: '#/esqueci-senha', onclick: (e) => { e.preventDefault(); forgotScreen(email.value); } }, 'Esqueci minha senha')),
     DEMO ? demoLogin(async (who) => { try { await post('/login', { email: `${who}@demo.fisio`, password: 'demo1234' }); await boot(); } catch (err) { toast(err.message, 'error'); } })
       : h('p', { class: 'auth-switch' }, 'Ainda não usa o FisioGestão? ', h('a', { href: '#/criar-conta', onclick: (e) => { e.preventDefault(); signupScreen(); } }, `Crie sua conta — ${TRIAL_DAYS} dias grátis`)));
   authShell(form); if (!DEMO) setTimeout(() => email.focus(), 50);
+}
+
+// ---------------- Esqueci minha senha ----------------
+function forgotScreen(prefill = '') {
+  const email = h('input', { class: 'input', type: 'email', autocomplete: 'username', required: true, value: prefill });
+  const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Enviar link');
+  const box = h('div', { class: 'stack' });
+  const backLink = () => h('p', { class: 'auth-switch' }, h('a', { href: '#/', onclick: (e) => { e.preventDefault(); history.replaceState(null, '', '#/'); loginScreen(); } }, '← Voltar para o login'));
+  const form = h('form', { class: 'auth-box stack', onsubmit: async (e) => {
+    e.preventDefault(); btn.disabled = true;
+    try {
+      const r = await post('/password/forgot', { email: email.value });
+      box.replaceChildren(h('div', { class: 'notice info' }, icon('check'), h('span', null, r.message)));
+      btn.hidden = true; email.disabled = true;
+    } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+  } },
+    h('div', null, h('h2', null, 'Esqueci minha senha'), h('p', null, 'Informe o e-mail da sua conta. Enviaremos um link para você criar uma nova senha.')),
+    h('label', { class: 'field' }, h('span', null, 'E-mail'), email),
+    btn, box, backLink());
+  history.replaceState(null, '', '#/esqueci-senha');
+  authShell(form); setTimeout(() => email.focus(), 50);
+}
+
+async function resetScreen(token) {
+  history.replaceState(null, '', '#/redefinir-senha'); // tira o código da barra de endereço
+  const done = (msg) => { history.replaceState(null, '', '#/'); loginScreen(); if (msg) toast(msg); };
+  let info;
+  try { info = await post('/password/check', { token }); }
+  catch (err) {
+    authShell(h('div', { class: 'auth-box stack' }, h('div', null, h('h2', null, 'Link inválido')),
+      h('div', { class: 'notice' }, icon('alert'), h('span', null, err.message)),
+      h('button', { class: 'btn primary', onclick: () => forgotScreen() }, 'Pedir um novo link'),
+      h('p', { class: 'auth-switch' }, h('a', { href: '#/', onclick: (e) => { e.preventDefault(); done(); } }, '← Voltar para o login'))));
+    return;
+  }
+  const pw = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', required: true, minLength: 8 });
+  const pw2 = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', required: true });
+  const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Salvar nova senha');
+  const form = h('form', { class: 'auth-box stack', onsubmit: async (e) => {
+    e.preventDefault();
+    if (pw.value !== pw2.value) { toast('As duas senhas não são iguais', 'error'); pw2.select(); return; }
+    btn.disabled = true;
+    try { await post('/password/reset', { token, password: pw.value }); done('Senha alterada. Entre com a nova senha.'); }
+    catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+  } },
+    h('div', null, h('h2', null, 'Criar nova senha'), h('p', null, `Conta: ${info.email}`)),
+    h('input', { type: 'email', autocomplete: 'username', value: info.email, hidden: true, readOnly: true }),
+    h('label', { class: 'field' }, h('span', null, 'Nova senha'), pw, h('small', { class: 'help' }, 'Pelo menos 8 caracteres, com letras e números.')),
+    h('label', { class: 'field' }, h('span', null, 'Repita a nova senha'), pw2),
+    btn,
+    h('small', { class: 'help' }, 'Ao salvar, todas as sessões abertas com esta conta serão encerradas.'));
+  authShell(form); setTimeout(() => pw.focus(), 50);
 }
 
 function demoLogin(enter) {
@@ -227,6 +280,13 @@ async function loadSession() {
 
 
 async function boot() {
+  // link do e-mail "Esqueci minha senha": #/redefinir-senha?t=...
+  const route = getRoute();
+  if (!DEMO && route.startsWith('redefinir-senha?')) {
+    const t = new URLSearchParams(route.split('?')[1]).get('t');
+    if (t) return resetScreen(t);
+  }
+  if (!DEMO && route === 'esqueci-senha') return forgotScreen();
   try {
     await loadSession();
     shell = null; router();

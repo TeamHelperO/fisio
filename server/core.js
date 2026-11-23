@@ -216,6 +216,17 @@ CREATE TABLE IF NOT EXISTS saas.marketing_contacts (
   revoked_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+-- Esqueci minha senha: links de uso único (guarda só o hash do token)
+CREATE TABLE IF NOT EXISTS saas.password_resets (
+  token_hash text PRIMARY KEY,
+  clinic_id integer NOT NULL REFERENCES saas.clinics(id) ON DELETE CASCADE,
+  user_id integer NOT NULL,
+  email text NOT NULL,
+  expires_at bigint NOT NULL,
+  used_at timestamptz,
+  ip text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 -- Mercado Pago (assinaturas "preapproval") como segunda forma de pagamento
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS billing_provider text;
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS mp_preapproval_id text;
