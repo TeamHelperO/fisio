@@ -491,6 +491,7 @@ async function patientExport(p) {
     consentimentos: await q.all('SELECT * FROM consents WHERE patient_id=?', p.id), registros_clinicos: records,
     agendamentos: await q.all('SELECT * FROM appointments WHERE patient_id=? ORDER BY start', p.id),
     financeiro: await q.all('SELECT * FROM charges WHERE patient_id=? ORDER BY due_date', p.id),
+    programas_exercicios: (await q.all('SELECT * FROM exercise_programs WHERE patient_id=? ORDER BY start_date', p.id)).map(programView),
   };
 }
 route('DELETE', '/api/patients/:id', async (ctx) => {
@@ -956,15 +957,186 @@ route('GET', '/api/patients/:id/audit', async (ctx) => {
 // ====================== Dados da clínica (exportação completa — LGPD / portabilidade) ======================
 route('GET', '/api/clinic/export', async (ctx) => {
   requireRole(ctx.user, ['admin']);
-  const tables = ['patients', 'consents', 'appointments', 'services', 'packages', 'patient_packages', 'charges', 'audit_log', 'settings'];
+  const tables = ['patients', 'consents', 'appointments', 'services', 'packages', 'patient_packages', 'charges', 'audit_log', 'settings', 'exercises'];
   const out = { exportado_em: new Date().toISOString(), clinica: ctx.clinic.name, formato: 'FisioGestão JSON v1' };
   out.users = await q.all('SELECT id,name,email,role,crefito,active,created_at,last_login FROM users ORDER BY id');
   for (const t of tables) out[t] = await q.all(`SELECT * FROM ${t} ORDER BY 1`);
   out.records = (await q.all('SELECT * FROM records ORDER BY id')).map(({ data_enc, ...r }) => ({ ...r, data: decrypt(data_enc) }));
   out.record_versions = (await q.all('SELECT * FROM record_versions ORDER BY id')).map(({ data_enc, ...r }) => ({ ...r, data: decrypt(data_enc) }));
+  out.exercise_programs = (await q.all('SELECT * FROM exercise_programs ORDER BY id')).map(programView);
   await audit(ctx, 'exportou_clinica', 'clinic', ctx.clinic.id);
   return { __download: `fisiogestao-${today()}.json`, body: JSON.stringify(out, null, 2) };
 }, { always: true });
+
+// ====================== Biblioteca de exercícios ======================
+// Catálogo fixo (server/data/exercicios.json: textos do ExerciseDB v1, licença MIT, traduzidos) + exercícios próprios da clínica.
+// Referência de um exercício: "c-0001" (catálogo) ou "p-12" (próprio da clínica).
+const CATALOG = require('./data/exercicios.json').exercises;
+const CATALOG_BY_CODE = new Map(CATALOG.map((e) => [e.code, e]));
+const EX_REGIONS = [...new Set(CATALOG.map((e) => e.region))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+const EX_OBJECTIVES = ['Fortalecimento', 'Alongamento e mobilidade', 'Equilíbrio e propriocepção', 'Condicionamento', 'Funcional', 'Respiratório', 'Outro'];
+const EX_EQUIPMENT = ['Peso corporal', 'Elástico', 'Halter / caneleira', 'Bola suíça', 'Medicine ball', 'Bosu', 'Rolo', 'Cadeira / banco', 'Degrau', 'Bastão', 'Outro'];
+const catalogView = (e, full) => ({
+  ref: `c-${e.code}`, source: 'catalogo', name: e.name, region: e.region, objective: e.objective, equipment: e.equipment,
+  target: e.target, muscles: e.muscles, ...(full ? { steps: e.steps, source_name: e.source_name } : {}),
+});
+const ownView = (e, full) => ({
+  ref: `p-${e.id}`, id: e.id, source: 'clinica', name: e.name, region: e.region, objective: e.objective, equipment: e.equipment,
+  target: e.target, muscles: e.muscles ? e.muscles.split('\n').filter(Boolean) : [], media_url: e.media_url, based_on: e.based_on,
+  ...(full ? { steps: e.steps.split('\n').filter(Boolean) } : {}),
+});
+const MEDIA_RE = /^https:\/\/[^\s<>"']{4,490}$/;
+function exerciseInput(b) {
+  const steps = (Array.isArray(b.steps) ? b.steps : String(b.steps || '').split('\n')).map((s) => String(s).trim()).filter(Boolean);
+  if (!steps.length) throw new HttpError(400, 'Descreva pelo menos um passo de execução');
+  if (steps.length > 20) throw new HttpError(400, 'Use no máximo 20 passos');
+  steps.forEach((s) => { if (s.length > 500) throw new HttpError(400, 'Cada passo pode ter até 500 caracteres'); });
+  const muscles = (Array.isArray(b.muscles) ? b.muscles : String(b.muscles || '').split(/[\n,]/)).map((s) => String(s).trim()).filter(Boolean).slice(0, 15);
+  const media = str(b.media_url, 500);
+  if (media && !MEDIA_RE.test(media)) throw new HttpError(400, 'O link de vídeo ou imagem precisa começar com https://');
+  return {
+    name: reqStr(b.name, 'Nome', 150), region: reqStr(b.region, 'Região', 80),
+    objective: oneOf(reqStr(b.objective, 'Objetivo', 80), EX_OBJECTIVES, 'Objetivo'),
+    equipment: reqStr(b.equipment, 'Equipamento', 80), target: str(b.target, 120),
+    muscles: muscles.join('\n') || null, steps: steps.join('\n'), media_url: media,
+  };
+}
+async function findExercise(ref) {
+  const m = /^([cp])-(\w{1,10})$/.exec(String(ref || ''));
+  if (!m) return null;
+  if (m[1] === 'c') { const e = CATALOG_BY_CODE.get(m[2]); return e ? catalogView(e, true) : null; }
+  const e = await q.get('SELECT * FROM exercises WHERE id=? AND active=1', Number(m[2]) || 0);
+  return e ? ownView(e, true) : null;
+}
+
+route('GET', '/api/exercises/meta', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  return { regions: EX_REGIONS, objectives: EX_OBJECTIVES, equipment: EX_EQUIPMENT, catalog_count: CATALOG.length,
+    credit: 'Catálogo baseado no ExerciseDB v1 (via hasaneyldrm/exercises-dataset, licença MIT), traduzido e adaptado pelo FisioGestão.' };
+});
+route('GET', '/api/exercises', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const own = (await q.all('SELECT * FROM exercises WHERE active=1 ORDER BY name')).map((e) => ownView(e));
+  return [...own, ...CATALOG.map((e) => catalogView(e))];
+});
+route('GET', '/api/exercises/:ref', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const e = await findExercise(ctx.params.ref);
+  if (!e) throw new HttpError(404, 'Exercício não encontrado');
+  return e;
+});
+route('POST', '/api/exercises', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const e = exerciseInput(ctx.body);
+  const based = ctx.body.based_on && CATALOG_BY_CODE.has(String(ctx.body.based_on).replace(/^c-/, '')) ? String(ctx.body.based_on) : null;
+  const res = await q.run('INSERT INTO exercises(name,region,objective,equipment,target,muscles,steps,media_url,based_on,created_by) VALUES (?,?,?,?,?,?,?,?,?,?)',
+    e.name, e.region, e.objective, e.equipment, e.target, e.muscles, e.steps, e.media_url, based, ctx.user.id);
+  const id = Number(res.lastInsertRowid);
+  await audit(ctx, 'criou', 'exercicio', id, null, { nome: e.name });
+  return { id, ref: `p-${id}` };
+});
+route('PUT', '/api/exercises/:id', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const ex = await q.get('SELECT * FROM exercises WHERE id=? AND active=1', idParam(ctx.params.id));
+  if (!ex) throw new HttpError(404, 'Exercício não encontrado');
+  const e = exerciseInput({ ...ownView(ex, true), ...ctx.body });
+  await q.run('UPDATE exercises SET name=?,region=?,objective=?,equipment=?,target=?,muscles=?,steps=?,media_url=?,updated_at=now_local() WHERE id=?',
+    e.name, e.region, e.objective, e.equipment, e.target, e.muscles, e.steps, e.media_url, ex.id);
+  await audit(ctx, 'alterou', 'exercicio', ex.id, null, { nome: e.name });
+  return { ok: true };
+});
+route('DELETE', '/api/exercises/:id', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const ex = await q.get('SELECT * FROM exercises WHERE id=? AND active=1', idParam(ctx.params.id));
+  if (!ex) throw new HttpError(404, 'Exercício não encontrado');
+  // exclusão lógica: programas já prescritos guardam uma cópia do exercício e não são afetados
+  await q.run('UPDATE exercises SET active=0, updated_at=now_local() WHERE id=?', ex.id);
+  await audit(ctx, 'excluiu', 'exercicio', ex.id, null, { nome: ex.name });
+  return { ok: true };
+});
+
+// ---------- Programas de exercícios (prescrição para o paciente; conteúdo cifrado como o prontuário) ----------
+const optNum = (v, label, max) => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > max) throw new HttpError(400, `${label}: valor inválido`);
+  return Math.round(n * 10) / 10;
+};
+async function programInput(b) {
+  const items = Array.isArray(b.items) ? b.items : [];
+  if (!items.length) throw new HttpError(400, 'Adicione pelo menos um exercício ao programa');
+  if (items.length > 40) throw new HttpError(400, 'Use no máximo 40 exercícios por programa');
+  const out = [];
+  for (const it of items) {
+    // guarda uma cópia do exercício como foi prescrito (edições posteriores na biblioteca não alteram o prontuário)
+    const base = it.ref ? await findExercise(it.ref) : null;
+    const steps = (Array.isArray(it.steps) ? it.steps : base?.steps || []).map((s) => String(s).trim()).filter(Boolean).slice(0, 20);
+    steps.forEach((s) => { if (s.length > 500) throw new HttpError(400, 'Cada passo pode ter até 500 caracteres'); });
+    const media = str(it.media_url ?? base?.media_url, 500);
+    if (media && !MEDIA_RE.test(media)) throw new HttpError(400, 'O link de vídeo ou imagem precisa começar com https://');
+    out.push({
+      ref: base ? base.ref : null,
+      name: reqStr(it.name ?? base?.name, 'Nome do exercício', 150),
+      region: str(it.region ?? base?.region, 80), equipment: str(it.equipment ?? base?.equipment, 80),
+      steps, media_url: media,
+      sets: optNum(it.sets, 'Séries', 50), reps: str(it.reps, 30), hold_s: optNum(it.hold_s, 'Tempo de sustentação', 3600),
+      load: str(it.load, 60), rest_s: optNum(it.rest_s, 'Descanso', 3600), side: str(it.side, 40), notes: str(it.notes, 500),
+    });
+  }
+  return {
+    title: reqStr(b.title, 'Título', 120), start_date: date(b.start_date, 'Data de início', true),
+    status: oneOf(str(b.status, 20) || 'ativo', ['ativo', 'encerrado'], 'Situação'),
+    data: { frequency: str(b.frequency, 120), duration: str(b.duration, 120), notes: str(b.notes, 2000), items: out },
+  };
+}
+const programView = (r) => {
+  const { data_enc, ...rest } = r;
+  return { ...rest, ...decrypt(data_enc) };
+};
+route('GET', '/api/patients/:id/programs', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const p = await getPatient(ctx.user, ctx.params.id);
+  const rows = await q.all(`SELECT x.*, u.name author_name, u.crefito author_crefito FROM exercise_programs x LEFT JOIN users u ON u.id=x.author_id
+    WHERE x.patient_id=? ORDER BY (x.status='ativo') DESC, x.start_date DESC, x.id DESC`, p.id);
+  return rows.map(programView);
+});
+route('GET', '/api/programs/:id', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const r = await q.get('SELECT x.*, u.name author_name, u.crefito author_crefito FROM exercise_programs x LEFT JOIN users u ON u.id=x.author_id WHERE x.id=?', idParam(ctx.params.id));
+  if (!r) throw new HttpError(404, 'Programa não encontrado');
+  await getPatient(ctx.user, r.patient_id);
+  return programView(r);
+});
+route('POST', '/api/programs', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const p = await getPatient(ctx.user, ctx.body.patient_id);
+  const x = await programInput(ctx.body);
+  const res = await q.run('INSERT INTO exercise_programs(patient_id,author_id,title,start_date,status,data_enc) VALUES (?,?,?,?,?,?)',
+    p.id, ctx.user.id, x.title, x.start_date, x.status, encrypt(x.data));
+  const id = Number(res.lastInsertRowid);
+  await audit(ctx, 'criou', 'programa_exercicios', id, p.id, { exercicios: x.data.items.length });
+  return { id };
+});
+route('PUT', '/api/programs/:id', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const ex = await q.get('SELECT * FROM exercise_programs WHERE id=?', idParam(ctx.params.id));
+  if (!ex) throw new HttpError(404, 'Programa não encontrado');
+  await getPatient(ctx.user, ex.patient_id);
+  const x = await programInput({ ...programView(ex), ...ctx.body });
+  await q.run('UPDATE exercise_programs SET title=?, start_date=?, status=?, data_enc=?, updated_at=now_local() WHERE id=?',
+    x.title, x.start_date, x.status, encrypt(x.data), ex.id);
+  await audit(ctx, 'alterou', 'programa_exercicios', ex.id, ex.patient_id, { situacao: x.status });
+  return { ok: true };
+});
+route('DELETE', '/api/programs/:id', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const ex = await q.get('SELECT * FROM exercise_programs WHERE id=?', idParam(ctx.params.id));
+  if (!ex) throw new HttpError(404, 'Programa não encontrado');
+  await getPatient(ctx.user, ex.patient_id);
+  await q.run('DELETE FROM exercise_programs WHERE id=?', ex.id);
+  await audit(ctx, 'excluiu', 'programa_exercicios', ex.id, ex.patient_id, { titulo: ex.title });
+  return { ok: true };
+});
 
 // ====================== Assinatura (Stripe) ======================
 route('GET', '/api/billing', async (ctx) => clinicInfo(ctx.clinic), { always: true });

@@ -10,6 +10,12 @@ Cada clínica cria a própria conta em **/#/criar-conta**, ganha **7 dias gráti
 - **Criptografia:** cada clínica tem a própria chave AES-256-GCM para os registros clínicos, guardada cifrada pela `MASTER_KEY`.
 - **Plataforma:** o schema `saas` guarda clínicas, assinaturas, sessões, índice de e-mails (um e-mail = uma clínica) e tentativas de login.
 
+## Biblioteca de exercícios
+
+Menu **Exercícios**: 321 exercícios em português (peso corporal, elástico, bola suíça, medicine ball, bosu e rolo), com busca por nome, músculo ou região e filtros por objetivo e equipamento. A clínica pode **personalizar** qualquer exercício ou criar os seus, com link de vídeo próprio. Na ficha do paciente, aba **Exercícios**, o fisioterapeuta monta o **programa** (séries, repetições, sustentação, carga, descanso, lado e observações) e gera a **folha para casa** em PDF. O programa guarda uma cópia do exercício como foi prescrito e fica cifrado como o prontuário.
+
+O catálogo vem do ExerciseDB v1 (licença MIT), traduzido pelo FisioGestão, **sem imagens** (as mídias originais são licenciadas pela Gym visual). Detalhes em `server/data/LICENCA-exercicios.md`.
+
 ## Aplicativo (PWA)
 
 O FisioGestão pode ser **instalado como aplicativo** no computador, Android e iPhone (botão "Instalar aplicativo" no menu; no iPhone: Safari → Compartilhar → Adicionar à Tela de Início). O service worker (`public/sw.js`) guarda só a casca do sistema (HTML, CSS, JS, ícones) para abrir rápido; **dados de pacientes e respostas da API nunca ficam salvos no aparelho**. Ao mudar a lista de arquivos do app, aumente `VERSION` em `sw.js`.

@@ -8,6 +8,7 @@ import { agendaPage } from './pages/agenda.js';
 import { financePage } from './pages/finance.js';
 import { reportsPage } from './pages/reports.js';
 import { settingsPage } from './pages/settings.js';
+import { exercisesPage, programEditPage } from './pages/exercises.js';
 import { initPWA, installButton } from './pwa.js';
 
 const root = $('#root');
@@ -19,6 +20,7 @@ const NAV = [
   ['avaliacoes', 'Avaliações', 'activity', true],
   ['planos', 'Planos de tratamento', 'target', true],
   ['evolucoes', 'Evoluções', 'trending', true],
+  ['exercicios', 'Exercícios', 'target', true],
   ['agenda', 'Agenda', 'calendar'],
   ['financeiro', 'Financeiro', 'wallet'],
   ['relatorios', 'Relatórios', 'file'],
@@ -173,6 +175,9 @@ const ROUTES = [
   [/^registro\/(anamnese|avaliacao|plano|evolucao)\/novo\/(\d+)$/, () => recordEditPage, true],
   [/^registro\/(\d+)\/editar$/, () => recordEditPage, true],
   [/^registro\/(\d+)$/, () => recordViewPage, true],
+  [/^exercicios$/, () => exercisesPage, true],
+  [/^programa\/(novo)\/(\d+)$/, () => programEditPage, true],
+  [/^programa\/(\d+)\/editar$/, () => programEditPage, true],
   [/^agenda$/, () => agendaPage],
   [/^financeiro(?:\/(\w+))?$/, () => financePage],
   [/^relatorios$/, () => reportsPage],
@@ -187,7 +192,7 @@ async function router() {
   const [path, query] = raw.split('?');
   if (!path || path === 'criar-conta') return go('#/dashboard');
   const top = path.split('/')[0];
-  const navKey = top === 'registro' ? { anamnese: 'anamnese', avaliacao: 'avaliacoes', plano: 'planos', evolucao: 'evolucoes' }[path.split('/')[1]] || 'pacientes' : top;
+  const navKey = top === 'programa' ? 'pacientes' : top === 'registro' ? { anamnese: 'anamnese', avaliacao: 'avaliacoes', plano: 'planos', evolucao: 'evolucoes' }[path.split('/')[1]] || 'pacientes' : top;
   shell.nav.querySelectorAll('a').forEach((a) => a.classList.toggle('active', a.dataset.path === navKey));
   const r = ROUTES.find(([re]) => re.test(path));
   const c = shell.content;

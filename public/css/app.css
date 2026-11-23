@@ -355,3 +355,16 @@ textarea.input { resize: vertical; min-height: 64px; }
   .topbar { padding-top: env(safe-area-inset-top); }
   .sidebar { padding-top: env(safe-area-inset-top); }
 }
+
+/* ---------- Biblioteca de exercícios ---------- */
+.ex-filters { gap: 8px; }
+.ex-list .list-item { padding: 10px 14px; }
+.ex-ic { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: var(--primary-50); color: var(--primary); flex: none; }
+.ex-sub { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ex-steps { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+.ex-num { width: 26px; height: 26px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--primary); color: #fff; font-weight: 700; font-size: 12.5px; flex: none; }
+.form-grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.form-grid .span-2 { grid-column: span 2; }
+.ex-details { margin-top: 10px; }
+.ex-details summary { cursor: pointer; color: var(--primary); font-weight: 600; font-size: 13px; }
+@media (max-width: 900px) { .form-grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

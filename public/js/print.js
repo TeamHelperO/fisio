@@ -211,6 +211,30 @@ const DOCS = {
         h('tbody', null, d.rows.map((r) => h('tr', null, h('td', null, fmtDate(r.paid_at)), h('td', null, r.patient_name), h('td', null, r.patient_cpf || '—'), h('td', null, r.payer_name || r.patient_name), h('td', null, r.payer_cpf || r.patient_cpf || '—'), h('td', null, LABELS.method[r.method] || '—'), h('td', null, r.receipt_number || ''), h('td', { class: 'n' }, money(r.amount)))))),
       signature(S.professional_name, S.crefito)] };
   },
+  // Folha de exercícios para o paciente levar para casa
+  async programa() {
+    const x = await get(`/programs/${P.get('id')}`);
+    const p = await get(`/patients/${x.patient_id}`);
+    const dose = (it) => [it.sets ? `${it.sets} série(s)` : '', it.reps ? `${it.reps} repetições` : '', it.hold_s ? `sustentar ${it.hold_s} segundos` : '',
+      it.rest_s ? `descanso de ${it.rest_s} s` : '', it.side || ''].filter(Boolean).join(' · ');
+    return { title: x.title, body: [header('Programa de exercícios'),
+      h('div', { class: 'box ident' },
+        h('div', { class: 'wide' }, h('b', null, 'Paciente'), p.name),
+        h('div', null, h('b', null, 'Início'), fmtDate(x.start_date)),
+        h('div', { class: 'wide' }, h('b', null, 'Programa'), x.title),
+        h('div', null, h('b', null, 'Frequência'), x.frequency || '—'),
+        x.duration ? h('div', { class: 'full' }, h('b', null, 'Duração prevista'), x.duration) : null),
+      x.notes ? h('div', { class: 'box term' }, x.notes) : null,
+      ...x.items.map((it, i) => h('div', { class: 'exercise' },
+        h('div', { class: 'ex-head' }, h('span', { class: 'ex-n' }, i + 1), h('b', null, it.name)),
+        dose(it) || it.load ? h('div', { class: 'ex-dose' }, dose(it), it.load ? h('span', null, ` · Carga: ${it.load}`) : null) : null,
+        it.steps?.length ? h('ol', null, it.steps.map((s) => h('li', null, s))) : null,
+        it.notes ? h('div', { class: 'ex-note' }, h('b', null, 'Atenção: '), it.notes) : null,
+        it.media_url ? h('div', { class: 'ex-link' }, 'Vídeo: ', it.media_url) : null,
+        h('div', { class: 'ex-check' }, 'Feito:', ...['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].map((d) => h('span', null, '☐ ', d))))),
+      h('div', { class: 'notice' }, 'Faça os exercícios com calma e respiração tranquila. Se sentir dor forte, tontura, falta de ar ou formigamento, pare e avise seu fisioterapeuta.'),
+      signature(x.author_name, x.author_crefito)] };
+  },
 };
 
 async function latest(type) {

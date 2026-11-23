@@ -5,6 +5,7 @@ import { recordTab, evolutionsTab, painSeries } from './records.js';
 import { patientAppointments } from './agenda.js';
 import { patientFinance } from './finance.js';
 import { lineChart } from '../charts.js';
+import { programsTab } from './exercises.js';
 
 const profOptions = () => state.professionals.map((p) => [p.id, p.name]);
 
@@ -90,7 +91,7 @@ export async function patientFormPage(view, [id]) {
 // ======================= Prontuário =======================
 const TABS = [
   ['resumo', 'Resumo'], ['anamnese', 'Anamnese', true], ['avaliacoes', 'Avaliações', true], ['plano', 'Plano de tratamento', true],
-  ['evolucoes', 'Evoluções', true], ['agenda', 'Agenda'], ['financeiro', 'Financeiro'], ['documentos', 'Documentos'], ['lgpd', 'LGPD e privacidade'],
+  ['evolucoes', 'Evoluções', true], ['exercicios', 'Exercícios', true], ['agenda', 'Agenda'], ['financeiro', 'Financeiro'], ['documentos', 'Documentos'], ['lgpd', 'LGPD e privacidade'],
 ];
 
 export async function patientPage(view, [id, tab = 'resumo']) {
@@ -122,6 +123,7 @@ export async function patientPage(view, [id, tab = 'resumo']) {
     avaliacoes: () => recordTab(body, p, 'avaliacao'),
     plano: () => recordTab(body, p, 'plano'),
     evolucoes: () => evolutionsTab(body, p),
+    exercicios: () => programsTab(body, p),
     agenda: () => patientAppointments(body, p),
     financeiro: () => patientFinance(body, p),
     documentos: () => documentsTab(body, p),
@@ -177,6 +179,7 @@ function documentsTab(body, p) {
       doc('Ficha de anamnese', 'Última anamnese registrada', 'clipboard', () => openPrint('anamnese', { patient: p.id })),
       doc('Avaliação fisioterapêutica', 'Última avaliação/reavaliação', 'activity', () => openPrint('avaliacao', { patient: p.id })),
       doc('Plano de tratamento', 'Plano ativo (ou o mais recente)', 'target', () => openPrint('plano', { patient: p.id })),
+      doc('Programa de exercícios', 'Folha de exercícios para casa (programa ativo)', 'target', () => go(`#/pacientes/${p.id}/exercicios`)),
       doc('Evolução das sessões', 'Todas as evoluções em ordem cronológica', 'trending', () => openPrint('evolucoes', { patient: p.id })),
       doc('Relatório de acompanhamento', 'Resumo clínico: diagnóstico, plano, frequência, evolução da dor', 'file', () => openPrint('acompanhamento', { patient: p.id })),
       doc('Prontuário completo', 'Cadastro, anamnese, avaliações, planos e evoluções', 'file', () => openPrint('prontuario', { patient: p.id })),
