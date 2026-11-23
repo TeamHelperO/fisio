@@ -4,7 +4,7 @@ Prontuário eletrônico completo para fisioterapeutas autônomos e clínicas: ca
 
 ## Como funciona (SaaS)
 
-Cada clínica cria a própria conta em **/#/criar-conta**, ganha **7 dias grátis sem cartão** e depois assina pelo **Stripe**. Sem assinatura ativa, a conta fica em **somente leitura**: dá para consultar e exportar tudo, mas não criar ou alterar registros.
+Cada clínica cria a própria conta em **/#/criar-conta**, ganha **7 dias grátis sem cartão** e depois assina pelo **Mercado Pago** ou pelo **Stripe** (cartão de crédito, cobrança mensal automática). Sem assinatura ativa, a conta fica em **somente leitura**: dá para consultar e exportar tudo, mas não criar ou alterar registros.
 
 - **Isolamento:** cada clínica tem um *schema* próprio no Postgres (`c_<id>`), com as mesmas tabelas. Toda requisição roda numa transação apontada para o schema da clínica do usuário logado — uma consulta nunca enxerga outra clínica.
 - **Criptografia:** cada clínica tem a própria chave AES-256-GCM para os registros clínicos, guardada cifrada pela `MASTER_KEY`.
@@ -14,6 +14,7 @@ Cada clínica cria a própria conta em **/#/criar-conta**, ganha **7 dias gráti
 
 1. **Supabase** — crie um projeto (região *South America — São Paulo*). Em *Connect → Transaction pooler*, copie a string de conexão (porta 6543). As tabelas são criadas sozinhas no primeiro acesso.
 2. **Stripe** — crie um produto com preço **recorrente** (ex.: mensal) e copie o `price_...`. Em *Developers → Webhooks*, crie um endpoint `https://SEU-DOMINIO/api/stripe/webhook` com os eventos `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated` e `customer.subscription.deleted`, e copie o segredo `whsec_...`. Ative o *Customer portal* em *Settings → Billing*.
+   **Mercado Pago** (opcional, pode usar junto ou no lugar do Stripe) — em *Suas integrações*, crie uma aplicação e copie o **Access Token** de produção (`APP_USR-...`). Em *Webhooks*, cadastre `https://SEU-DOMINIO/api/mercadopago/webhook` com o evento **Planos e assinaturas** (e *Pagamentos de assinaturas*), e copie a **assinatura secreta**. No painel `/admin` → APIs, informe o token, a assinatura secreta e o valor mensal (ex.: `79,90`).
 3. **Vercel** — importe o repositório (sem framework, sem build). Conecte o banco pela integração **Supabase** do Marketplace da Vercel (ela cria `POSTGRES_URL` sozinha) ou cadastre `DATABASE_URL` à mão. Em *Settings → Environment Variables*, cadastre também: `MASTER_KEY`, `APP_URL`, `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `CRON_SECRET`. A função roda em São Paulo (`gru1`), e um cron diário limpa sessões vencidas.
 
 > ⚠️ **Guarde a `MASTER_KEY` em local seguro e separado.** Sem ela, os prontuários de todas as clínicas ficam ilegíveis — nem os backups do Supabase resolvem.
@@ -26,9 +27,9 @@ Requisito: **Node.js 22.13+**. Copie `.env.example` para `.env`, preencha `DATAB
 
 - **Dashboard:** clínicas, testes grátis (e quais terminam em 3 dias), assinantes, conversão, MRR, cadastros dos últimos 30 dias.
 - **Clínicas:** situação de cada conta, contagens agregadas (usuários, pacientes, atendimentos em 30 dias); estender teste grátis, liberar, deixar em somente leitura ou suspender.
-- **Financeiro:** MRR, assinaturas e faturas pagas, lidos do Stripe.
+- **Financeiro:** MRR, assinaturas e faturas pagas, lidos do Stripe e do Mercado Pago.
 - **Usuários e marketing:** todos os usuários das clínicas e quem aceitou receber marketing; exporta CSV **só com quem consentiu**, com link de descadastro de cada contato.
-- **APIs e integrações:** chaves do Stripe e do Resend, e-mail de suporte e dias de teste — guardadas cifradas no banco (têm prioridade sobre as variáveis de ambiente).
+- **APIs e integrações:** chaves do Stripe, do Mercado Pago e do Resend, e-mail de suporte e dias de teste — guardadas cifradas no banco (têm prioridade sobre as variáveis de ambiente).
 - **Administradores** e **registro de ações**.
 
 O painel **não dá acesso** a prontuários, cadastros de pacientes ou dados financeiros dos pacientes.
@@ -70,7 +71,7 @@ Os documentos abrem em uma nova aba já formatados em A4, com identificação do
 
 ```
 api/          função serverless da Vercel (encaminha para server/app.js)
-server/       API (app.js), banco multi-clínica (core.js), Stripe (stripe.js), servidor local (server.js)
+server/       API (app.js), banco multi-clínica (core.js), Stripe (stripe.js), Mercado Pago (mercadopago.js), servidor local (server.js)
 public/       interface web (HTML/CSS/JS modular, responsiva), termos e privacidade
 ```
 

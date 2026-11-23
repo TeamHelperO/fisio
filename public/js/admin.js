@@ -152,7 +152,7 @@ async function clinicas(view) {
     const days = h('input', { class: 'input', type: 'number', min: 1, max: 365, value: 7, style: { width: '90px' } });
     const access = h('select', { class: 'input' }, [['', 'Automático (pela assinatura/teste)'], ['full', 'Liberar acesso total'], ['readonly', 'Somente leitura'], ['blocked', 'Suspender acesso']].map(([v, l]) => h('option', { value: v, selected: (c.manual_access || '') === v }, l)));
     const m = modal({ title: c.name, body: h('div', { class: 'stack' },
-      h('div', { class: 'notice info' }, icon('shield'), h('div', null, 'Responsável: ', h('b', null, c.owner_email), ` · Stripe: ${c.stripe_customer_id || 'sem cliente'} · Assinatura: ${c.subscription_status || 'nenhuma'}`)),
+      h('div', { class: 'notice info' }, icon('shield'), h('div', null, 'Responsável: ', h('b', null, c.owner_email), ` · Pagamento: ${c.billing_provider === 'mercadopago' ? `Mercado Pago (${c.mp_preapproval_id})` : c.stripe_customer_id ? `Stripe (${c.stripe_customer_id})` : 'nenhum'} · Assinatura: ${c.subscription_status || 'nenhuma'}`)),
       h('div', { class: 'field' }, h('span', null, 'Estender o teste grátis'), h('div', { class: 'row' }, days, h('span', null, 'dias'), h('button', { class: 'btn', onclick: async () => {
         try { await put(A(`/clinics/${c.id}`), { extend_trial_days: Number(days.value) }); toast('Teste estendido'); m.close(); refresh(); } catch (e) { toast(e.message, 'error'); }
       } }, 'Estender'))),
@@ -171,11 +171,14 @@ async function clinicas(view) {
 // ---------------- Financeiro ----------------
 async function financeiro(view) {
   const f = await get(A('/finance'));
-  view.append(head('Financeiro', 'Assinaturas e faturas pagas no Stripe', f.billing_enabled ? h('button', { class: 'btn', onclick: async (e) => { e.currentTarget.disabled = true; await get(A('/finance?refresh=1')); refresh(); } }, icon('history', 15), 'Atualizar') : null));
+  view.append(head('Financeiro', 'Assinaturas no Stripe e no Mercado Pago', f.billing_enabled ? h('button', { class: 'btn', onclick: async (e) => { e.currentTarget.disabled = true; await get(A('/finance?refresh=1')); refresh(); } }, icon('history', 15), 'Atualizar') : null));
   if (!f.billing_enabled) {
-    view.append(h('div', { class: 'notice info' }, icon('wallet'), h('div', null, 'O Stripe ainda não está configurado. Cadastre a chave secreta e o ID do preço em ', h('a', { href: '#/apis' }, 'APIs e integrações'), '.')));
+    view.append(h('div', { class: 'notice info' }, icon('wallet'), h('div', null, 'Nenhuma forma de pagamento configurada. Cadastre as chaves do Stripe ou do Mercado Pago em ', h('a', { href: '#/apis' }, 'APIs e integrações'), '.')));
     return;
   }
+  if (f.mp_enabled) view.append(mpFinance(f.mercadopago));
+  if (!f.stripe_enabled) return;
+  view.append(h('h2', { style: { margin: '8px 0 12px' } }, 'Stripe'));
   const mrr = Object.entries(f.mrr || {});
   const cur = mrr[0]?.[0] || 'BRL';
   const last = f.revenue_by_month[f.revenue_by_month.length - 1];
@@ -190,6 +193,23 @@ async function financeiro(view) {
       h('td', { class: 'nowrap' }, fmtDay(i.created)), h('td', null, i.clinic), h('td', { class: 'right nowrap' }, money2(i.amount, i.currency)),
       h('td', { class: 'actions' }, i.url ? h('a', { class: 'btn sm', href: i.url, target: '_blank', rel: 'noopener noreferrer' }, 'Fatura') : null)))) : empty('Nenhuma fatura ainda.'))),
   h('p', null, h('small', null, `Dados consultados no Stripe em ${fmtTs(f.fetched_at)} (atualizados a cada 5 minutos).`)));
+}
+
+function mpFinance(m) {
+  const box = h('div', { style: { marginBottom: '24px' } }, h('h2', { style: { margin: '0 0 12px' } }, 'Mercado Pago'));
+  if (!m || m.error) { box.append(h('div', { class: 'notice' }, icon('alert'), `Erro ao consultar o Mercado Pago: ${m?.error || 'sem resposta'}`)); return box; }
+  const mrr = Object.entries(m.mrr || {});
+  const MP_ST = { authorized: ['green', 'Ativa'], paused: ['amber', 'Pausada'] };
+  box.append(h('div', { class: 'kpis' },
+    kpi('MRR (Mercado Pago)', mrr.length ? mrr.map(([c, v]) => money2(v, c)).join(' + ') : money2(0), 'wallet', 'assinaturas ativas', 'good'),
+    kpi('Ativas', m.subscriptions.authorized, 'check', `${m.subscriptions.paused} pausada(s)`),
+    kpi('Canceladas', m.subscriptions.cancelled, 'x', 'desde o início'),
+    kpi('Pendentes', m.subscriptions.pending, 'clock', 'iniciaram e não pagaram', 'blue')),
+  card('Assinaturas ativas no Mercado Pago', m.active_list.length ? table(['Clínica', 'Situação', 'Valor', 'Próxima cobrança'], m.active_list.map((s) => h('tr', null,
+    h('td', null, s.clinic), h('td', null, pill(...(MP_ST[s.status] || ['gray', s.status]))), h('td', { class: 'right nowrap' }, money2(s.amount, s.currency)),
+    h('td', { class: 'nowrap' }, s.next_payment_date ? fmtDay(s.next_payment_date) : '—')))) : empty('Nenhuma assinatura ativa ainda.')),
+  h('p', null, h('small', null, `Consultado no Mercado Pago em ${fmtTs(m.fetched_at)} (atualizado a cada 5 minutos).`)));
+  return box;
 }
 
 // ---------------- Usuários e marketing ----------------
@@ -242,7 +262,7 @@ async function apis(view) {
       h('button', { class: 'btn primary', onclick: async () => { try { await put(A('/config'), { key: f.key, value: input.value }); toast('Configuração salva'); m.close(); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Salvar')] });
   };
   view.append(head('APIs e integrações', 'Chaves e parâmetros usados pela plataforma'),
-    h('div', { class: 'notice info', style: { marginBottom: '16px' } }, icon('shield'), h('div', null, 'As chaves ficam cifradas no banco de dados (com uma subchave da MASTER_KEY) e não aparecem na tela nem no registro de ações. O webhook do Stripe deve apontar para ', h('code', null, `${location.origin}/api/stripe/webhook`), '.')),
+    h('div', { class: 'notice info', style: { marginBottom: '16px' } }, icon('shield'), h('div', null, 'As chaves ficam cifradas no banco de dados (com uma subchave da MASTER_KEY) e não aparecem na tela nem no registro de ações. Webhooks: Stripe → ', h('code', null, `${location.origin}/api/stripe/webhook`), ' · Mercado Pago (evento "Planos e assinaturas") → ', h('code', null, `${location.origin}/api/mercadopago/webhook`), '.')),
     h('div', { class: 'stack' }, Object.entries(groups).map(([g, fs]) => card(g, table(['Configuração', 'Valor atual', 'Origem', 'Atualizado', ''], fs.map((f) => h('tr', null,
       h('td', null, h('b', null, f.label), h('div', null, h('small', null, f.key))), h('td', null, f.display ? h('code', null, f.display) : pill('gray', 'não configurado')),
       h('td', null, f.source || '—'), h('td', { class: 'nowrap' }, f.updated_at ? h('span', null, fmtTs(f.updated_at), h('div', null, h('small', null, f.updated_by || ''))) : '—'),

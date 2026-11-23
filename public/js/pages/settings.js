@@ -1,4 +1,4 @@
-import { h, icon, toast, buildForm, badge, fmtDT, empty, LABELS, modal, downloadFile, csvCell } from '../ui.js';
+import { h, icon, toast, buildForm, badge, fmtDT, empty, LABELS, modal, confirmDialog, money, downloadFile, csvCell } from '../ui.js';
 import { get, post, put, qs } from '../api.js';
 import { state, isAdmin, reloadSettings } from '../state.js';
 
@@ -104,9 +104,11 @@ async function lgpd(body) {
 const SUB_STATUS = { active: 'Ativa', trialing: 'Em período de teste', past_due: 'Pagamento atrasado', canceled: 'Cancelada', unpaid: 'Não paga', incomplete: 'Pagamento pendente', incomplete_expired: 'Expirada', paused: 'Pausada' };
 async function assinatura(body, query) {
   let info = await get('/billing');
-  // volta do Stripe: o webhook pode levar alguns segundos para confirmar a assinatura
+  // volta do pagamento: o webhook pode levar alguns segundos para confirmar a assinatura
+  // (no Mercado Pago a situação também é consultada diretamente)
+  const recheck = () => (info.has_mp_preapproval && info.providers?.mercadopago ? post('/billing/mp/refresh') : get('/billing'));
   if (query?.get('status') === 'ok' && info.access.reason !== 'subscription') {
-    for (let i = 0; i < 6 && info.access.reason !== 'subscription'; i++) { await new Promise((r) => setTimeout(r, 1500)); info = await get('/billing'); }
+    for (let i = 0; i < 6 && info.access.reason !== 'subscription'; i++) { await new Promise((r) => setTimeout(r, 1500)); info = await recheck().catch(() => info); }
     if (info.access.reason === 'subscription') { toast('Assinatura confirmada. Obrigado!'); location.hash = '#/configuracoes/assinatura'; location.reload(); return; }
   }
   const a = info.access;
@@ -116,14 +118,40 @@ async function assinatura(body, query) {
     try { const r = await post(path); location.href = r.url; } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
   };
   const subscribed = ['active', 'trialing', 'past_due'].includes(info.subscription_status);
+  const provider = info.billing_provider;
+  const endsSoon = info.subscription_status === 'canceled' && a.reason === 'subscription'; // cancelada, mas ainda dentro do período pago
   const pill = (tone, text) => h('span', { class: `badge ${tone}` }, text);
   let status;
-  if (subscribed) status = pill(info.subscription_status === 'past_due' ? 'amber' : 'green', SUB_STATUS[info.subscription_status] || info.subscription_status);
+  if (subscribed) status = [pill(info.subscription_status === 'past_due' ? 'amber' : 'green', SUB_STATUS[info.subscription_status] || info.subscription_status), provider ? ` via ${provider === 'mercadopago' ? 'Mercado Pago' : 'Stripe'}` : ''];
+  else if (endsSoon) status = [pill('amber', 'Cancelada'), ` — o acesso continua até ${fmt(info.current_period_end)}`];
   else if (a.reason === 'trial') status = [pill('blue', 'Teste grátis'), ` ${a.trial_days_left} dia(s) restante(s), até ${fmt(info.trial_ends_at)}`];
   else status = pill('gray', a.reason === 'trial_ended' ? 'Teste grátis encerrado' : `Assinatura ${(SUB_STATUS[info.subscription_status] || 'inativa').toLowerCase()}`);
 
-  const subBtn = h('button', { class: 'btn primary' }, icon('wallet', 16), 'Assinar o FisioGestão');
+  const both = info.providers?.stripe && info.providers?.mercadopago;
+  const subBtn = h('button', { class: 'btn primary' }, icon('wallet', 16), both ? 'Assinar com cartão (Stripe)' : 'Assinar o FisioGestão');
   subBtn.onclick = () => goTo('/billing/checkout', subBtn);
+  const mpBtn = h('button', { class: `btn ${both ? '' : 'primary'}` }, icon('wallet', 16), 'Assinar com Mercado Pago');
+  mpBtn.onclick = () => {
+    const email = h('input', { class: 'input', type: 'email', value: state.user.email, autocomplete: 'email' });
+    const go = h('button', { class: 'btn primary' }, 'Continuar para o Mercado Pago');
+    const m = modal({ title: 'Assinar com Mercado Pago', body: h('div', { class: 'stack' },
+      info.mp_price ? h('p', { style: { margin: 0 } }, 'Assinatura mensal de ', h('b', null, money(info.mp_price)), ', cobrada automaticamente no cartão de crédito. Você pode cancelar quando quiser.') : null,
+      endsSoon ? h('div', { class: 'notice' }, icon('alert'), `Sua assinatura anterior já está paga até ${fmt(info.current_period_end)}. A nova assinatura começa a cobrar hoje.`) : null,
+      h('label', { class: 'field' }, h('span', null, 'E-mail da sua conta do Mercado Pago'), email,
+        h('small', { class: 'help' }, 'Precisa ser o mesmo e-mail com que você entra no Mercado Pago, senão o pagamento é recusado.'))),
+    actions: [h('button', { class: 'btn ghost', onclick: () => m.close() }, 'Voltar'), go] });
+    go.onclick = async () => {
+      go.disabled = true;
+      try { const r = await post('/billing/mp/checkout', { payer_email: email.value }); location.href = r.url; } catch (e) { toast(e.message, 'error'); go.disabled = false; }
+    };
+  };
+  const mpCancelBtn = h('button', { class: 'btn ghost' }, icon('x', 16), 'Cancelar assinatura');
+  mpCancelBtn.onclick = async () => {
+    const ok = await confirmDialog(`A cobrança mensal no Mercado Pago será cancelada.${info.current_period_end ? ` O acesso completo continua até ${fmt(info.current_period_end)}.` : ''} Depois disso, os dados ficam disponíveis para consulta e exportação.`, { title: 'Cancelar assinatura', okLabel: 'Cancelar assinatura', danger: true });
+    if (!ok) return;
+    mpCancelBtn.disabled = true;
+    try { await post('/billing/mp/cancel'); toast('Assinatura cancelada'); location.reload(); } catch (e) { toast(e.message, 'error'); mpCancelBtn.disabled = false; }
+  };
   const portalBtn = h('button', { class: 'btn' }, icon('settings', 16), 'Gerenciar assinatura e pagamento');
   portalBtn.onclick = () => goTo('/billing/portal', portalBtn);
 
@@ -132,10 +160,17 @@ async function assinatura(body, query) {
     h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Assinatura')), h('div', { class: 'card-body stack' },
       h('p', { style: { margin: 0, fontSize: '15px' } }, h('b', null, 'Situação: '), status),
       subscribed && info.current_period_end ? h('p', { style: { margin: 0 } }, info.cancel_at_period_end ? `Cancelamento agendado: o acesso continua até ${fmt(info.current_period_end)}.` : `Próxima cobrança: ${fmt(info.current_period_end)}.`) : null,
+      subscribed && provider === 'mercadopago' && info.subscription_status === 'past_due' ? h('div', { class: 'notice' }, icon('alert'), 'O Mercado Pago não conseguiu cobrar o cartão e vai tentar de novo. Para trocar o cartão, entre na sua conta do Mercado Pago → Assinaturas.') : null,
       a.mode === 'readonly' ? h('div', { class: 'notice' }, icon('alert'), 'Enquanto a assinatura não estiver ativa, os dados ficam disponíveis apenas para consulta e exportação.') : null,
       !info.billing_enabled ? h('div', { class: 'notice info' }, icon('clock'), 'A assinatura on-line ainda não foi liberada nesta instalação.') : null,
-      h('div', { class: 'row' }, info.billing_enabled && !subscribed ? subBtn : null, info.billing_enabled && (subscribed || info.subscription_status) ? portalBtn : null),
-      h('small', { class: 'help' }, 'Pagamento processado pelo Stripe. O FisioGestão não armazena dados do seu cartão. Você pode cancelar a qualquer momento em "Gerenciar assinatura".'))),
+      h('div', { class: 'row' },
+        !subscribed && info.providers?.mercadopago ? mpBtn : null,
+        !subscribed && info.providers?.stripe ? subBtn : null,
+        info.providers?.stripe && provider !== 'mercadopago' && (subscribed || info.subscription_status) ? portalBtn : null,
+        info.providers?.mercadopago && provider === 'mercadopago' && subscribed ? mpCancelBtn : null),
+      h('small', { class: 'help' }, provider === 'mercadopago'
+        ? 'Pagamento processado pelo Mercado Pago. O FisioGestão não armazena dados do seu cartão. Para trocar o cartão, use sua conta do Mercado Pago → Assinaturas.'
+        : `Pagamento processado pelo ${both ? 'Stripe ou pelo Mercado Pago' : info.providers?.mercadopago ? 'Mercado Pago' : 'Stripe'}. O FisioGestão não armazena dados do seu cartão. Você pode cancelar a qualquer momento.`))),
     h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Seus dados')), h('div', { class: 'card-body stack' },
       h('p', { style: { margin: 0 } }, 'Os dados da clínica ficam em uma área isolada do banco de dados, com chave de criptografia própria para os registros clínicos. A infraestrutura faz cópias de segurança diárias.'),
       h('p', { style: { margin: 0 } }, 'Você pode baixar a qualquer momento uma cópia completa (pacientes, prontuários, agenda, financeiro e registro de alterações) em formato JSON — inclusive com a assinatura inativa.'),

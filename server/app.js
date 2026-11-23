@@ -2,9 +2,10 @@
 // API do FisioGestão (SaaS multi-clínica). Exporta `handler(req, res)`, usado pela Vercel (api/index.js)
 // e pelo servidor local de desenvolvimento (server/server.js).
 const crypto = require('crypto');
-const { q, tx, sql, als, encrypt, decrypt, nowParts, TIMEZONES, signToken, ensureCore, withClinic, getClinic, createClinic, dropClinic } = require('./core');
+const { q, tx, sql, currentSql, als, encrypt, decrypt, nowParts, TIMEZONES, signToken, ensureCore, withClinic, getClinic, createClinic, dropClinic } = require('./core');
 const { HttpError, route, match, readBody, parseCookies, send, SECURITY_HEADERS } = require('./http');
 const stripe = require('./stripe');
+const mp = require('./mercadopago');
 const config = require('./config');
 
 const ON_VERCEL = !!process.env.VERCEL;
@@ -133,6 +134,8 @@ function clinicAccess(c) {
   let mode; let reason;
   if (c.manual_access) { mode = c.manual_access; reason = 'manual'; }
   else if (['active', 'trialing'].includes(c.subscription_status)) { mode = 'full'; reason = 'subscription'; }
+  // cancelada no Mercado Pago (lá o cancelamento é imediato): o acesso segue até o fim do período já pago
+  else if (c.subscription_status === 'canceled' && c.current_period_end && new Date(c.current_period_end).getTime() > now) { mode = 'full'; reason = 'subscription'; }
   else if (c.subscription_status === 'past_due') { mode = 'full'; reason = 'past_due'; } // o Stripe ainda está tentando cobrar
   else if (trialEnd > now) { mode = 'full'; reason = 'trial'; }
   else { mode = 'readonly'; reason = c.subscription_status ? 'subscription_ended' : 'trial_ended'; }
@@ -142,7 +145,10 @@ function clinicInfo(c) {
   return {
     id: c.id, name: c.name, timezone: c.timezone, trial_ends_at: c.trial_ends_at,
     subscription_status: c.subscription_status, current_period_end: c.current_period_end, cancel_at_period_end: c.cancel_at_period_end,
-    access: clinicAccess(c), billing_enabled: stripe.enabled(),
+    access: clinicAccess(c), billing_enabled: stripe.enabled() || mp.enabled(),
+    billing_provider: c.billing_provider || (c.stripe_subscription_id ? 'stripe' : null),
+    providers: { stripe: stripe.enabled(), mercadopago: mp.enabled() }, mp_price: mp.enabled() ? mp.price() : null,
+    has_mp_preapproval: !!c.mp_preapproval_id,
   };
 }
 
@@ -999,8 +1005,10 @@ async function syncSubscription(sub) {
   const id = clinicId || byCustomer?.id;
   if (!id) { console.warn('Webhook Stripe: assinatura sem clínica correspondente', sub.id); return; }
   const periodEnd = sub.current_period_end || sub.items?.data?.[0]?.current_period_end || null;
+  // não deixa um evento antigo do Stripe derrubar uma assinatura ativa no Mercado Pago
   await sql.unsafe(`UPDATE saas.clinics SET stripe_customer_id=COALESCE(stripe_customer_id,$2), stripe_subscription_id=$3, subscription_status=$4,
-    current_period_end=$5, cancel_at_period_end=$6 WHERE id=$1`,
+    current_period_end=$5, cancel_at_period_end=$6, billing_provider='stripe' WHERE id=$1
+    AND (billing_provider IS DISTINCT FROM 'mercadopago' OR subscription_status IS NULL OR subscription_status NOT IN ('active','past_due') OR $4 IN ('active','trialing'))`,
   [id, sub.customer, sub.id, sub.status, periodEnd ? new Date(periodEnd * 1000).toISOString() : null, !!sub.cancel_at_period_end]);
 }
 route('POST', '/api/stripe/webhook', async (ctx) => {
@@ -1020,6 +1028,88 @@ route('POST', '/api/stripe/webhook', async (ctx) => {
   } catch (e) {
     await sql.unsafe('DELETE FROM saas.stripe_events WHERE id=$1', [event.id]); // permite que o Stripe reenvie
     throw e;
+  }
+  return { received: true };
+}, { public: true, webhook: true, raw: true });
+
+// ====================== Assinatura (Mercado Pago) ======================
+route('POST', '/api/billing/mp/checkout', async (ctx) => {
+  requireRole(ctx.user, ['admin']);
+  if (!mp.enabled()) throw new HttpError(503, 'O Mercado Pago ainda não foi configurado na plataforma.');
+  const c = ctx.clinic;
+  if (['active', 'trialing', 'past_due'].includes(c.subscription_status)) throw new HttpError(400, 'A clínica já tem uma assinatura ativa.');
+  const email = String(ctx.body?.payer_email || ctx.user.email).trim().toLowerCase();
+  if (!EMAIL_RE.test(email) || email.length > 200) throw new HttpError(400, 'Informe um e-mail válido');
+  const pre = await mp.request('POST', '/preapproval', {
+    reason: 'FisioGestão — assinatura mensal',
+    external_reference: String(c.id),
+    payer_email: email,
+    auto_recurring: { frequency: 1, frequency_type: 'months', transaction_amount: mp.price(), currency_id: 'BRL' },
+    back_url: `${APP_URL}/#/configuracoes/assinatura?status=ok`,
+    status: 'pending',
+  });
+  if (!pre.id || !pre.init_point) throw new HttpError(502, 'Resposta inesperada do Mercado Pago. Tente novamente.');
+  await q.run('UPDATE saas.clinics SET mp_preapproval_id=? WHERE id=?', pre.id, c.id);
+  await audit(ctx, 'iniciou_assinatura', 'clinic', c.id, null, { provedor: 'mercadopago' });
+  return { url: pre.init_point };
+}, { always: true });
+
+// Atualiza a situação da clínica a partir de uma assinatura (preapproval) do Mercado Pago
+async function syncPreapproval(p) {
+  const clinicId = Number(p.external_reference) || (await currentSql().unsafe('SELECT id FROM saas.clinics WHERE mp_preapproval_id=$1', [p.id]))[0]?.id;
+  if (!clinicId) { console.warn('Mercado Pago: assinatura sem clínica correspondente', p.id); return; }
+  const status = mp.STATUS[p.status];
+  if (!status) return; // pendente (ainda não pagou) ou situação desconhecida: nada muda
+  const next = p.next_payment_date ? new Date(p.next_payment_date).toISOString() : null;
+  // ignora eventos de assinaturas antigas da mesma clínica e não derruba uma assinatura ativa no Stripe
+  await currentSql().unsafe(`UPDATE saas.clinics SET billing_provider='mercadopago', mp_preapproval_id=$2, subscription_status=$3,
+      current_period_end = CASE WHEN $3='canceled' THEN COALESCE(current_period_end, $4::timestamptz) ELSE COALESCE($4::timestamptz, current_period_end) END,
+      cancel_at_period_end = ($3='canceled')
+    WHERE id=$1 AND (mp_preapproval_id IS NULL OR mp_preapproval_id=$2 OR $3='active')
+      AND (billing_provider IS DISTINCT FROM 'stripe' OR subscription_status IS NULL OR subscription_status NOT IN ('active','trialing','past_due') OR $3='active')`,
+  [clinicId, p.id, status, next]);
+}
+const getPreapproval = (id) => mp.request('GET', `/preapproval/${encodeURIComponent(id)}`);
+
+// Consulta o Mercado Pago na volta do pagamento (não depende só do webhook)
+route('POST', '/api/billing/mp/refresh', async (ctx) => {
+  requireRole(ctx.user, ['admin']);
+  const c = ctx.clinic;
+  if (mp.enabled() && c.mp_preapproval_id) await syncPreapproval(await getPreapproval(c.mp_preapproval_id));
+  return clinicInfo(await getClinic(c.id));
+}, { always: true });
+
+route('POST', '/api/billing/mp/cancel', async (ctx) => {
+  requireRole(ctx.user, ['admin']);
+  const c = ctx.clinic;
+  if (c.billing_provider !== 'mercadopago' || !c.mp_preapproval_id || !['active', 'past_due', 'paused'].includes(c.subscription_status)) {
+    throw new HttpError(400, 'A clínica não tem assinatura ativa no Mercado Pago.');
+  }
+  await mp.request('PUT', `/preapproval/${encodeURIComponent(c.mp_preapproval_id)}`, { status: 'cancelled' });
+  await syncPreapproval(await getPreapproval(c.mp_preapproval_id));
+  await audit(ctx, 'cancelou_assinatura', 'clinic', c.id, null, { provedor: 'mercadopago' });
+  return clinicInfo(await getClinic(c.id));
+}, { always: true });
+
+// Notificações (webhook) do Mercado Pago
+route('POST', '/api/mercadopago/webhook', async (ctx) => {
+  let body = {};
+  try { body = JSON.parse(ctx.rawBody?.toString('utf8') || '{}'); } catch { /* corpo vazio ou inválido */ }
+  const type = body.type || ctx.query.get('type') || ctx.query.get('topic');
+  const dataId = String(ctx.query.get('data.id') || body.data?.id || '');
+  mp.verifyWebhook(ctx.req.headers, dataId);
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(dataId)) throw new HttpError(400, 'Identificador inválido');
+  if (type === 'subscription_preapproval') {
+    await syncPreapproval(await getPreapproval(dataId));
+  } else if (type === 'subscription_authorized_payment') {
+    const ap = await mp.request('GET', `/authorized_payments/${encodeURIComponent(dataId)}`);
+    if (ap.preapproval_id) {
+      await syncPreapproval(await getPreapproval(ap.preapproval_id));
+      // cobrança recusada: o Mercado Pago tenta de novo; a clínica vê o aviso de pagamento atrasado
+      if (ap.payment?.status === 'rejected' || ap.status === 'recycling') {
+        await sql.unsafe("UPDATE saas.clinics SET subscription_status='past_due' WHERE mp_preapproval_id=$1 AND subscription_status='active'", [ap.preapproval_id]);
+      }
+    }
   }
   return { received: true };
 }, { public: true, webhook: true, raw: true });

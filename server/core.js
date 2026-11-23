@@ -216,6 +216,10 @@ CREATE TABLE IF NOT EXISTS saas.marketing_contacts (
   revoked_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+-- Mercado Pago (assinaturas "preapproval") como segunda forma de pagamento
+ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS billing_provider text;
+ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS mp_preapproval_id text;
+CREATE UNIQUE INDEX IF NOT EXISTS clinics_mp_preapproval ON saas.clinics(mp_preapproval_id);
 `;
 
 // Tabelas de cada clínica. Datas ficam como texto (YYYY-MM-DD / YYYY-MM-DDTHH:MM) como na versão original.
@@ -369,7 +373,7 @@ async function withClinic(clinic, fn, extra = {}) {
 
 async function getClinic(id) {
   await ensureCore();
-  return (await sql.unsafe('SELECT * FROM saas.clinics WHERE id=$1', [id]))[0];
+  return (await currentSql().unsafe('SELECT * FROM saas.clinics WHERE id=$1', [id]))[0];
 }
 
 // Cria a clínica: registro na plataforma + schema próprio + chave de criptografia própria
@@ -402,6 +406,6 @@ async function dropClinic(id) {
 }
 
 module.exports = {
-  sql, q, tx, als, ctxStore, encrypt, decrypt, nowParts, TIMEZONES, sealPlatform, openPlatform, signToken,
+  sql, currentSql, q, tx, als, ctxStore, encrypt, decrypt, nowParts, TIMEZONES, sealPlatform, openPlatform, signToken,
   ensureCore, withClinic, getClinic, createClinic, dropClinic,
 };

@@ -9,6 +9,7 @@ const { sql, withClinic, getClinic, ensureCore } = require('./core');
 const { HttpError, route, parseCookies } = require('./http');
 const config = require('./config');
 const stripe = require('./stripe');
+const mp = require('./mercadopago');
 
 const SESSION_HOURS = 4;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -118,7 +119,8 @@ module.exports = function registerAdmin(deps) {
   const view = (c) => ({
     id: c.id, name: c.name, owner_email: c.owner_email, created_at: c.created_at, trial_ends_at: c.trial_ends_at, timezone: c.timezone,
     subscription_status: c.subscription_status, current_period_end: c.current_period_end, cancel_at_period_end: c.cancel_at_period_end,
-    stripe_customer_id: c.stripe_customer_id, manual_access: c.manual_access, access: clinicAccess(c),
+    stripe_customer_id: c.stripe_customer_id, mp_preapproval_id: c.mp_preapproval_id,
+    billing_provider: c.billing_provider || (c.stripe_subscription_id ? 'stripe' : null), manual_access: c.manual_access, access: clinicAccess(c),
   });
 
   adminRoute('GET', '/api/admin/clinics', async (ctx) => {
@@ -171,11 +173,18 @@ module.exports = function registerAdmin(deps) {
     const optIn = (await sql.unsafe('SELECT COUNT(*) n FROM saas.marketing_contacts WHERE opt_in'))[0].n;
     const recent = (await sql.unsafe('SELECT * FROM saas.clinics ORDER BY created_at DESC LIMIT 8')).map(view);
     let mrr = null;
-    if (stripe.enabled()) { try { mrr = (await stripeSummary()).mrr; } catch (e) { mrr = { error: e.message }; } }
+    const addMrr = (m) => { for (const [cur, v] of Object.entries(m || {})) mrr[cur] = Math.round(((mrr[cur] || 0) + v) * 100) / 100; };
+    if (stripe.enabled() || mp.enabled()) {
+      mrr = {};
+      try {
+        if (stripe.enabled()) addMrr((await stripeSummary()).mrr);
+        if (mp.enabled()) addMrr((await mpSummary()).mrr);
+      } catch (e) { mrr = { error: e.message }; }
+    }
     return {
       count, users, marketing_opt_in: optIn,
       conversion: decided ? Math.round((clinics.filter((c) => ['active', 'past_due'].includes(c.subscription_status)).length / decided) * 1000) / 10 : null,
-      signups_30d: signups.map((r) => ({ day: r.day, n: r.n })), recent, mrr, billing_enabled: stripe.enabled(),
+      signups_30d: signups.map((r) => ({ day: r.day, n: r.n })), recent, mrr, billing_enabled: stripe.enabled() || mp.enabled(),
     };
   });
 
@@ -220,9 +229,47 @@ module.exports = function registerAdmin(deps) {
     finAt = Date.now();
     return finCache;
   }
+  // ---------- Financeiro (dados do Mercado Pago) ----------
+  let mpCache = null; let mpAt = 0;
+  async function mpSummary(force = false) {
+    if (!force && mpCache && Date.now() - mpAt < 5 * 60e3) return mpCache;
+    const all = [];
+    for (let offset = 0; offset < 1000; offset += 100) {
+      const r = await mp.request('GET', `/preapproval/search?limit=100&offset=${offset}`);
+      const page = r.results || [];
+      all.push(...page);
+      if (page.length < 100) break;
+    }
+    const names = Object.fromEntries((await sql.unsafe('SELECT id, name FROM saas.clinics')).map((r) => [String(r.id), r.name]));
+    const mrr = {}; const statuses = {};
+    for (const p of all) {
+      statuses[p.status] = (statuses[p.status] || 0) + 1;
+      if (p.status !== 'authorized') continue;
+      const ar = p.auto_recurring || {}; const cur = (ar.currency_id || 'BRL').toUpperCase();
+      const freq = ar.frequency || 1;
+      const monthly = (ar.transaction_amount || 0) * (ar.frequency_type === 'days' ? 30 / freq : 1 / freq);
+      mrr[cur] = Math.round(((mrr[cur] || 0) + monthly) * 100) / 100;
+    }
+    mpCache = {
+      mrr,
+      subscriptions: { authorized: statuses.authorized || 0, paused: statuses.paused || 0, cancelled: statuses.cancelled || 0, pending: statuses.pending || 0 },
+      active_list: all.filter((p) => ['authorized', 'paused'].includes(p.status)).slice(0, 50).map((p) => ({
+        id: p.id, clinic: names[String(p.external_reference)] || p.payer_email || p.id, status: p.status,
+        amount: p.auto_recurring?.transaction_amount || 0, currency: (p.auto_recurring?.currency_id || 'BRL').toUpperCase(),
+        next_payment_date: p.next_payment_date || null,
+      })),
+      fetched_at: new Date().toISOString(),
+    };
+    mpAt = Date.now();
+    return mpCache;
+  }
+
   adminRoute('GET', '/api/admin/finance', async (ctx) => {
-    if (!stripe.enabled()) return { billing_enabled: false };
-    return { billing_enabled: true, ...(await stripeSummary(ctx.query.get('refresh') === '1')) };
+    const force = ctx.query.get('refresh') === '1';
+    const out = { billing_enabled: stripe.enabled() || mp.enabled(), stripe_enabled: stripe.enabled(), mp_enabled: mp.enabled() };
+    if (stripe.enabled()) Object.assign(out, await stripeSummary(force));
+    if (mp.enabled()) { try { out.mercadopago = await mpSummary(force); } catch (e) { out.mercadopago = { error: e.message }; } }
+    return out;
   });
 
   // ---------- Chaves de API e parâmetros ----------
@@ -233,6 +280,7 @@ module.exports = function registerAdmin(deps) {
     catch (e) { throw new HttpError(e.status || 500, e.message); }
     await log(ctx, ctx.body.value ? 'alterou_config' : 'removeu_config', key); // o valor nunca vai para a auditoria
     if (key.startsWith('STRIPE_')) finCache = null;
+    if (key.startsWith('MP_')) mpCache = null;
     return config.describe();
   });
 
