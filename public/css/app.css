@@ -342,3 +342,16 @@ textarea.input { resize: vertical; min-height: 64px; }
 .admin-mode .brand-mark { background: #6366f1; }
 .admin-mode .auth-art { background: linear-gradient(160deg, #1e1b4b, #312e81); }
 .admin-banner { background: #eef2ff; color: #3730a3; border-bottom-color: #e0e7ff; }
+
+/* ---------- Aplicativo instalável (PWA) ---------- */
+.side-install { padding: 0 12px 10px; }
+.install-btn { width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; border: 1px dashed rgba(255,255,255,.22); background: transparent; color: var(--sidebar-text); font: inherit; font-weight: 500; cursor: pointer; }
+.install-btn:hover { background: rgba(255,255,255,.06); color: #fff; }
+.install-btn[hidden], .auth-install .btn[hidden] { display: none; }
+.auth-install { display: flex; justify-content: center; margin-top: 14px; }
+.offline-banner { position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 200; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: 10px; background: #1f2937; color: #fff; font-size: 13px; box-shadow: var(--shadow-lg); }
+.offline-banner[hidden] { display: none; }
+@media (display-mode: standalone) {
+  .topbar { padding-top: env(safe-area-inset-top); }
+  .sidebar { padding-top: env(safe-area-inset-top); }
+}

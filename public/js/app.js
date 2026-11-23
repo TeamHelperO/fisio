@@ -8,6 +8,7 @@ import { agendaPage } from './pages/agenda.js';
 import { financePage } from './pages/finance.js';
 import { reportsPage } from './pages/reports.js';
 import { settingsPage } from './pages/settings.js';
+import { initPWA, installButton } from './pwa.js';
 
 const root = $('#root');
 
@@ -35,7 +36,7 @@ function authShell(form) {
         h('ul', null, ['Registros clínicos criptografados', 'Controle de acesso por perfil', 'Registro de alterações e backups automáticos', 'Documentos prontos para impressão e PDF']
           .map((t) => h('li', null, icon('check', 16), t)))),
       h('small', { style: { color: '#6f9894' } }, 'Dados de saúde são dados pessoais sensíveis (LGPD, art. 5º, II). Acesso restrito a profissionais autorizados.')),
-    h('div', { class: 'auth-form' }, form)));
+    h('div', { class: 'auth-form' }, form, h('div', { class: 'auth-install' }, installButton('btn ghost sm')))));
 }
 
 function loginScreen() {
@@ -136,6 +137,7 @@ function buildShell() {
     h('aside', { class: 'sidebar' },
       h('div', { class: 'brand' }, h('div', { class: 'brand-mark' }, icon('activity', 18)), h('div', null, h('b', null, 'FisioGestão'), h('small', null, state.settings.clinic_name || 'Prontuário eletrônico'))),
       nav,
+      h('div', { class: 'side-install' }, installButton()),
       h('div', { class: 'side-foot' }, h('div', { class: 'avatar' }, initials),
         h('div', { class: 'who' }, h('b', null, u.name), h('small', null, LABELS.role[u.role])),
         h('button', { class: 'icon-btn', title: 'Sair', 'aria-label': 'Sair', onclick: logout }, icon('logout')))),
@@ -224,9 +226,17 @@ async function boot() {
     await loadSession();
     shell = null; router();
   } catch (e) {
-    if (e.status !== 401 && e.status !== 403) { root.replaceChildren(h('div', { class: 'content' }, h('div', { class: 'notice' }, icon('alert'), 'Não foi possível conectar ao servidor.'))); return; }
+    if (e.status !== 401 && e.status !== 403) {
+      const msg = navigator.onLine ? 'Não foi possível conectar ao servidor.' : 'Você está sem internet. O FisioGestão precisa de conexão para acessar os dados da clínica.';
+      root.replaceChildren(h('div', { class: 'content', 'data-offline': '' }, h('div', { class: 'notice' }, icon('alert'), h('span', { style: { flex: 1 } }, msg),
+        h('button', { class: 'btn sm', onclick: () => { root.replaceChildren(loading()); boot(); } }, 'Tentar de novo'))));
+      return;
+    }
     if (e.status === 403) toast(e.message, 'error');
     !DEMO && getRoute() === 'criar-conta' ? signupScreen() : loginScreen();
   }
 }
+initPWA({ demo: DEMO });
+// voltou a conexão enquanto a tela de "sem internet" estava aberta: tenta de novo sozinho
+window.addEventListener('online', () => { if (!state.user && root.querySelector('[data-offline]')) boot(); });
 boot();

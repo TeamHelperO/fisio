@@ -10,6 +10,10 @@ Cada clínica cria a própria conta em **/#/criar-conta**, ganha **7 dias gráti
 - **Criptografia:** cada clínica tem a própria chave AES-256-GCM para os registros clínicos, guardada cifrada pela `MASTER_KEY`.
 - **Plataforma:** o schema `saas` guarda clínicas, assinaturas, sessões, índice de e-mails (um e-mail = uma clínica) e tentativas de login.
 
+## Aplicativo (PWA)
+
+O FisioGestão pode ser **instalado como aplicativo** no computador, Android e iPhone (botão "Instalar aplicativo" no menu; no iPhone: Safari → Compartilhar → Adicionar à Tela de Início). O service worker (`public/sw.js`) guarda só a casca do sistema (HTML, CSS, JS, ícones) para abrir rápido; **dados de pacientes e respostas da API nunca ficam salvos no aparelho**. Ao mudar a lista de arquivos do app, aumente `VERSION` em `sw.js`.
+
 ## Publicar (Supabase + Vercel + Stripe)
 
 1. **Supabase** — crie um projeto (região *South America — São Paulo*). Em *Connect → Transaction pooler*, copie a string de conexão (porta 6543). As tabelas são criadas sozinhas no primeiro acesso.
