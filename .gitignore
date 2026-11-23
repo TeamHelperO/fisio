@@ -1,5 +1,5 @@
 # Dados reais: banco, chave de criptografia e backups — NUNCA versionar
-data/
+/data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
