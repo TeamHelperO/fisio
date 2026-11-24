@@ -21,6 +21,10 @@
       "destination": "/agendar.html"
     },
     {
+      "source": "/assinar/:token",
+      "destination": "/assinar.html"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index"
     }

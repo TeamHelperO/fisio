@@ -56,6 +56,9 @@ table.grid tfoot td { font-weight: 700; background: #f2f5f6; }
 .exercise .ex-link { margin-left: 30px; font-size: 10.5px; color: var(--muted); word-break: break-all; }
 .exercise .ex-check { margin: 6px 0 0 30px; display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
 
+.sig-proof { display: flex; flex-direction: column; align-items: center; margin: 8px 0 4px; page-break-inside: avoid; }
+.sig-proof img { max-width: 320px; max-height: 120px; object-fit: contain; }
+
 @page { size: A4; margin: 12mm; }
 @media print {
   body { background: #fff; }

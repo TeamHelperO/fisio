@@ -211,6 +211,20 @@ const DOCS = {
         h('tbody', null, d.rows.map((r) => h('tr', null, h('td', null, fmtDate(r.paid_at)), h('td', null, r.patient_name), h('td', null, r.patient_cpf || '—'), h('td', null, r.payer_name || r.patient_name), h('td', null, r.payer_cpf || r.patient_cpf || '—'), h('td', null, LABELS.method[r.method] || '—'), h('td', null, r.receipt_number || ''), h('td', { class: 'n' }, money(r.amount)))))),
       signature(S.professional_name, S.crefito)] };
   },
+  // Comprovante de assinatura digital: documento como foi assinado + assinatura + evidências
+  async assinatura() {
+    const s = await get(`/signatures/${P.get('id')}`);
+    if (s.status !== 'assinado') return { title: 'Assinatura', body: [h('p', null, 'Este documento ainda não foi assinado.')] };
+    return { title: `Assinado — ${s.doc.title}`, body: [header(s.doc.title),
+      ...s.doc.sections.map((x) => (x.h ? [h('h2', null, x.h), h('div', { class: 'term' }, x.text)] : h('div', { class: 'term', style: { marginTop: '10px' } }, x.text))).flat(),
+      h('h2', null, 'Assinatura eletrônica do paciente'),
+      h('div', { class: 'sig-proof' }, h('img', { src: s.signature, alt: `Assinatura de ${s.signer_name}` }), h('div', { class: 'sign-line', style: { width: '320px' } }, s.signer_name, h('small', null, s.signer_cpf ? `CPF ${s.signer_cpf}` : 'Paciente / responsável'))),
+      h('table', { class: 'kv', style: { marginTop: '12px' } }, h('tbody', null,
+        [['Assinado por', s.signer_name], ['CPF informado', s.signer_cpf || '—'], ['Data e hora', `${fmtDate(s.signed_at.slice(0, 10))} às ${s.signed_at.slice(11, 16)} (horário da clínica)`],
+          ['Endereço IP', s.ip || '—'], ['Navegador', s.user_agent || '—'], ['Código de verificação do documento', s.doc_hash.slice(0, 16).toUpperCase()],
+          ['Pedido de assinatura', `nº ${s.id}, gerado por ${s.created_by_name || '—'} em ${fmtDate(s.created_at.slice(0, 10))}`]].map(([k, v]) => h('tr', null, h('th', null, k), h('td', null, v))))),
+      h('p', { class: 'footnote' }, 'Assinatura eletrônica coletada pelo FisioGestão (MP 2.200-2/2001, art. 10, § 2º). O documento foi registrado exatamente como apresentado ao signatário; o código de verificação muda se qualquer parte do texto for alterada.')] };
+  },
   // Folha de exercícios para o paciente levar para casa
   async programa() {
     const x = await get(`/programs/${P.get('id')}`);

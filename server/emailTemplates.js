@@ -86,6 +86,22 @@ const DEFAULTS = {
     body: 'Olá, {{nome}}!\n\nInfelizmente a {{clinica}} não pôde confirmar o horário de {{data}} às {{hora}}.\nMotivo: {{motivo}}\n\nVocê pode escolher outro horário pelo link abaixo.',
     button: 'Escolher outro horário',
   },
+  assinatura_solicitada: {
+    group: 'Assinatura digital', optional: true, name: 'Pedido de assinatura (para o paciente)',
+    when: 'Enviado ao paciente quando a clínica gera um link de assinatura e escolhe "enviar por e-mail".',
+    vars: { nome: 'Nome do paciente', clinica: 'Nome da clínica', documento: 'Nome do documento', validade: 'Validade do link' }, link: true,
+    subject: 'Documento para assinar — {{clinica}}',
+    body: 'Olá, {{nome}}!\n\nA {{clinica}} enviou o documento "{{documento}}" para você ler e assinar pelo celular.\n\nO link vale por {{validade}}. Se tiver dúvidas, fale com a clínica antes de assinar.',
+    button: 'Ler e assinar',
+  },
+  assinatura_concluida: {
+    group: 'Assinatura digital', optional: true, name: 'Documento assinado (para a clínica)',
+    when: 'Enviado ao profissional que pediu a assinatura assim que o paciente assina.',
+    vars: { nome: 'Nome do profissional', paciente: 'Nome do paciente', documento: 'Nome do documento', data: 'Data e hora da assinatura' }, link: true,
+    subject: '{{paciente}} assinou: {{documento}}',
+    body: 'Olá, {{nome}}!\n\n{{paciente}} assinou o documento "{{documento}}" em {{data}}.\n\nO comprovante com a assinatura e os dados de verificação está na ficha do paciente, aba LGPD.',
+    button: 'Ver na ficha do paciente',
+  },
   boas_vindas: {
     group: 'Ciclo do cliente', optional: true, name: 'Boas-vindas com primeiros passos',
     when: 'Enviado uma vez, cerca de 1 hora depois do cadastro da clínica.',
@@ -147,7 +163,8 @@ const DEFAULTS = {
 const SAMPLE = { nome: 'Ana Souza', clinica: 'Clínica Movimento', validade: '48 horas', convidado_por: 'Dra. Helena Prado', servico: 'SMTP', admin: 'Administrador',
   dias: '3', data_fim: '27/11/2026', proxima_cobranca: '24/12/2026', acesso_ate: '24/12/2026',
   paciente: 'João Pereira', telefone: '(11) 98888-7777', data: '02/12/2026', hora: '14:00', profissional: 'Dra. Helena Prado',
-  endereco: 'Rua das Flores, 100 — Centro', telefone_clinica: '(11) 3333-4444', motivo: 'O horário não está mais disponível.' };
+  endereco: 'Rua das Flores, 100 — Centro', telefone_clinica: '(11) 3333-4444', motivo: 'O horário não está mais disponível.',
+  documento: 'Termo de consentimento — LGPD (v1.0)' };
 
 const VAR_RE = /\{\{\s*([a-z_]+)\s*\}\}/g;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

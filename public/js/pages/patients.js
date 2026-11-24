@@ -6,6 +6,7 @@ import { patientAppointments } from './agenda.js';
 import { patientFinance } from './finance.js';
 import { lineChart } from '../charts.js';
 import { programsTab } from './exercises.js';
+import { signaturesCard } from './signatures.js';
 
 const profOptions = () => state.professionals.map((p) => [p.id, p.name]);
 
@@ -225,6 +226,7 @@ async function lgpdTab(body, p) {
         h('td', null, c.revoked_at ? h('span', { class: 'badge red', title: c.revoke_reason || '' }, `Revogado ${fmtDate(c.revoked_at)}`) : h('span', { class: 'badge green' }, 'Vigente')),
         h('td', { class: 'actions' }, !c.revoked_at ? h('button', { class: 'btn sm ghost', onclick: () => revoke(c) }, 'Revogar') : null))))))
       : h('div', { class: 'card-body' }, h('div', { class: 'notice' }, icon('alert'), 'Nenhum consentimento registrado. Dados de saúde exigem consentimento específico e destacado do titular (LGPD, art. 11).'))),
+    await signaturesCard(p),
   ];
   if (isClinical()) {
     cards.push(h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Direitos do titular')),

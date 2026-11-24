@@ -1521,6 +1521,153 @@ route('POST', '/api/booking/requests/:id/decline', async (ctx) => {
   return { ok: true };
 });
 
+// ====================== Assinatura digital (pelo celular do paciente) ======================
+// A clínica gera um link de uso único (7 dias) para o termo LGPD ou para o plano de tratamento.
+// Guardamos, cifrados: o documento exatamente como foi mostrado, a assinatura desenhada e as evidências
+// (nome digitado, data e hora, IP, navegador e o código de verificação do documento).
+const SIGN_TTL_DAYS = 7;
+const PLANO_FIELDS = [['diagnostico_fisio', 'Diagnóstico fisioterapêutico'], ['objetivo_geral', 'Objetivo geral'], ['objetivos_especificos', 'Objetivos específicos'],
+  ['condutas', 'Condutas terapêuticas'], ['tecnicas', 'Técnicas que serão utilizadas'], ['outras_tecnicas', 'Outras técnicas'], ['exercicios', 'Exercícios planejados'],
+  ['frequencia', 'Frequência semanal'], ['duracao', 'Previsão de duração do tratamento'], ['criterios_reavaliacao', 'Critérios para reavaliação'], ['orientacoes', 'Orientações domiciliares']];
+async function signDocument(p, docType, recordId) {
+  const s = await getSettings();
+  const controller = [s.clinic_name, s.professional_name, s.crefito ? `CREFITO ${s.crefito}` : ''].filter(Boolean).join(' — ');
+  if (docType === 'consentimento') {
+    return { title: `Termo de consentimento — LGPD (v${s.consent_version})`, version: s.consent_version, term_hash: sha(s.consent_text),
+      sections: [{ h: 'Controlador dos dados', text: controller }, { h: 'Titular', text: `${p.name}${p.cpf ? ` — CPF ${p.cpf}` : ''}` }, { h: '', text: s.consent_text }] };
+  }
+  const r = await q.get("SELECT * FROM records WHERE id=? AND patient_id=? AND type='plano' AND deleted_at IS NULL", recordId, p.id);
+  if (!r) throw new HttpError(404, 'Plano de tratamento não encontrado');
+  const data = decrypt(r.data_enc) || {};
+  const sections = [{ h: 'Paciente', text: `${p.name}${p.cpf ? ` — CPF ${p.cpf}` : ''}` }, { h: 'Profissional', text: controller }];
+  for (const [k, label] of PLANO_FIELDS) {
+    const v = Array.isArray(data[k]) ? data[k].join(', ') : String(data[k] ?? '').trim();
+    if (v) sections.push({ h: label, text: v });
+  }
+  sections.push({ h: 'Declaração', text: 'Declaro que recebi as explicações sobre o plano de tratamento fisioterapêutico acima, compreendi os objetivos, as condutas e a frequência propostas, e concordo em realizá-lo. Sei que posso tirar dúvidas e interromper o tratamento a qualquer momento.' });
+  return { title: `Plano de tratamento fisioterapêutico — ${fmtDay(r.record_date)}`, sections };
+}
+const canSign = (user, docType) => docType === 'consentimento' || CLINICAL.includes(user.role);
+
+route('POST', '/api/patients/:id/signatures', async (ctx) => {
+  const p = await getPatient(ctx.user, ctx.params.id);
+  const docType = oneOf(ctx.body.doc_type, ['consentimento', 'plano'], 'Documento');
+  if (!canSign(ctx.user, docType)) throw new HttpError(403, 'Acesso não permitido para o seu perfil');
+  const recordId = docType === 'plano' ? idParam(ctx.body.record_id) : null;
+  const doc = await signDocument(p, docType, recordId);
+  const docJson = JSON.stringify(doc);
+  const exp = new Date(`${today()}T12:00`); exp.setDate(exp.getDate() + SIGN_TTL_DAYS);
+  // pedido anterior do mesmo documento que ainda não foi assinado deixa de valer
+  await q.run("UPDATE signature_requests SET status='cancelado' WHERE patient_id=? AND doc_type=? AND coalesce(record_id,0)=? AND status='pendente'", p.id, docType, recordId || 0);
+  const r = await q.run('INSERT INTO signature_requests(patient_id, doc_type, record_id, title, expires_at, created_by, doc_hash, doc_enc) VALUES (?,?,?,?,?,?,?,?)',
+    p.id, docType, recordId, doc.title, ymd(exp), ctx.user.id, sha(docJson), encrypt(doc));
+  const id = Number(r.lastInsertRowid);
+  const token = crypto.randomBytes(32).toString('base64url');
+  await q.run('INSERT INTO saas.signature_links(token_hash, clinic_id, request_id, expires_at) VALUES (?,?,?,?)', sha(token), ctx.clinic.id, id, Date.now() + SIGN_TTL_DAYS * 86400e3);
+  await audit(ctx, 'pediu_assinatura', 'signature_request', id, p.id, { documento: docType });
+  const url = `${APP_URL}/assinar/${token}`;
+  let emailed = false;
+  if (ctx.body.send_email && p.email) {
+    try {
+      await notify.sendTemplate('assinatura_solicitada', { to: p.email, clinicId: ctx.clinic.id, url,
+        vars: { nome: p.name, clinica: (await getSettings()).clinic_name || ctx.clinic.name, documento: doc.title, validade: `${SIGN_TTL_DAYS} dias` } });
+      emailed = true;
+    } catch (e) { console.error('Assinatura: e-mail não enviado', e.message); }
+  }
+  return { id, url, emailed, title: doc.title };
+});
+route('GET', '/api/patients/:id/signatures', async (ctx) => {
+  const p = await getPatient(ctx.user, ctx.params.id);
+  const rows = await q.all('SELECT s.id, s.doc_type, s.record_id, s.title, s.status, s.expires_at, s.created_at, s.signed_at, s.signer_name, u.name created_by_name FROM signature_requests s LEFT JOIN users u ON u.id=s.created_by WHERE s.patient_id=? ORDER BY s.id DESC', p.id);
+  return rows.filter((r) => canSign(ctx.user, r.doc_type)).map((r) => ({ ...r, expired: r.status === 'pendente' && r.expires_at < today() }));
+});
+route('GET', '/api/signatures/:id', async (ctx) => {
+  const s = await q.get('SELECT s.*, u.name created_by_name FROM signature_requests s LEFT JOIN users u ON u.id=s.created_by WHERE s.id=?', idParam(ctx.params.id));
+  if (!s) throw new HttpError(404, 'Não encontrado');
+  const p = await getPatient(ctx.user, s.patient_id);
+  if (!canSign(ctx.user, s.doc_type)) throw new HttpError(403, 'Acesso não permitido para o seu perfil');
+  const { doc_enc, signature_enc, ...rest } = s;
+  return { ...rest, patient_name: p.name, doc: decrypt(doc_enc), signature: signature_enc ? decrypt(signature_enc) : null };
+});
+route('POST', '/api/signatures/:id/cancel', async (ctx) => {
+  const s = await q.get('SELECT * FROM signature_requests WHERE id=?', idParam(ctx.params.id));
+  if (!s) throw new HttpError(404, 'Não encontrado');
+  await getPatient(ctx.user, s.patient_id);
+  if (s.status !== 'pendente') throw new HttpError(400, 'Só é possível cancelar um pedido ainda não assinado.');
+  await q.run("UPDATE signature_requests SET status='cancelado' WHERE id=?", s.id);
+  await audit(ctx, 'cancelou_pedido_assinatura', 'signature_request', s.id, s.patient_id);
+  return { ok: true };
+});
+
+// ---------- Página pública de assinatura ----------
+async function signLink(token) {
+  if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,60}$/.test(token)) throw new HttpError(404, 'Link de assinatura inválido.');
+  const l = (await sql.unsafe('SELECT * FROM saas.signature_links WHERE token_hash=$1', [sha(token)]))[0];
+  if (!l) throw new HttpError(404, 'Link de assinatura inválido.');
+  const clinic = await getClinic(l.clinic_id);
+  if (!clinic || clinicAccess(clinic).mode === 'blocked') throw new HttpError(404, 'Link de assinatura indisponível.');
+  return { link: l, clinic };
+}
+route('GET', '/api/public/sign/:token', async (ctx) => {
+  const key = `sign|${ctx.ip}`; await checkRate(key);
+  let ctxData;
+  try { ctxData = await signLink(ctx.params.token); } catch (e) { await failRate(key, 20, 30); throw e; }
+  const { link, clinic } = ctxData;
+  return withClinic(clinic, async () => {
+    const s = await q.get('SELECT * FROM signature_requests WHERE id=?', link.request_id);
+    if (!s) throw new HttpError(404, 'Link de assinatura inválido.');
+    const clinicName = (await getSettings()).clinic_name || clinic.name;
+    if (s.status === 'assinado') return { status: 'assinado', title: s.title, signed_at: s.signed_at, clinic: clinicName };
+    if (s.status === 'cancelado') return { status: 'cancelado', title: s.title, clinic: clinicName };
+    if (s.expires_at < today() || Number(link.expires_at) < Date.now()) return { status: 'expirado', title: s.title, clinic: clinicName };
+    const p = await q.get('SELECT name FROM patients WHERE id=?', s.patient_id);
+    return { status: 'pendente', clinic: clinicName, patient_name: p?.name || '', doc: decrypt(s.doc_enc), code: s.doc_hash.slice(0, 16).toUpperCase() };
+  });
+}, { public: true });
+route('POST', '/api/public/sign/:token', async (ctx) => {
+  const key = `sign|${ctx.ip}`; await checkRate(key);
+  const { link, clinic } = await signLink(ctx.params.token);
+  const name = reqStr(ctx.body.name, 'Nome completo', 160);
+  if (name.replace(/[^\p{L}]/gu, '').length < 3) throw new HttpError(400, 'Digite o seu nome completo');
+  const cpf = ctx.body.cpf ? cpfField(ctx.body.cpf, 'CPF') : null;
+  if (!ctx.body.agree) throw new HttpError(400, 'Marque "Li e concordo" para assinar');
+  const sig = String(ctx.body.signature || '');
+  const m = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(sig);
+  if (!m || m[1].length > 400000) throw new HttpError(400, 'Desenhe a sua assinatura no quadro');
+  const png = Buffer.from(m[1], 'base64');
+  if (png.length < 200 || png.toString('hex', 0, 8) !== '89504e470d0a1a0a') throw new HttpError(400, 'Assinatura inválida. Desenhe de novo, por favor.');
+  await failRate(key, 20, 30);
+  const out = await withClinic(clinic, async () => {
+    const s = await q.get('SELECT * FROM signature_requests WHERE id=?', link.request_id);
+    if (!s || s.status !== 'pendente' || s.expires_at < today() || Number(link.expires_at) < Date.now()) throw new HttpError(400, 'Este link não está mais disponível para assinatura.');
+    const doc = decrypt(s.doc_enc);
+    if (sha(JSON.stringify(doc)) !== s.doc_hash) throw new HttpError(409, 'O documento foi alterado. Peça um novo link à clínica.');
+    const when = nowLocal();
+    const ua = String(ctx.req.headers['user-agent'] || '').slice(0, 300);
+    const upd = await q.run(`UPDATE signature_requests SET status='assinado', signed_at=?, signer_name=?, signer_cpf=?, ip=?, user_agent=?, signature_enc=?
+      WHERE id=? AND status='pendente'`, when, name, cpf, ctx.ip, ua, encrypt(sig), s.id);
+    if (!upd.changes) throw new HttpError(400, 'Este documento já foi assinado.');
+    let consentId = null;
+    if (s.doc_type === 'consentimento') {
+      consentId = Number((await q.run('INSERT INTO consents(patient_id, term_version, term_hash, method, signer_name, accepted_at, registered_by) VALUES (?,?,?,?,?,?,?)',
+        s.patient_id, doc.version || '1.0', doc.term_hash || s.doc_hash, 'assinatura_digital', name, when.slice(0, 10), s.created_by)).lastInsertRowid);
+      await q.run('UPDATE signature_requests SET consent_id=? WHERE id=?', consentId, s.id);
+    }
+    ctx.user = null;
+    await audit(ctx, 'assinou_documento', 'signature_request', s.id, s.patient_id, { documento: s.doc_type, ip: ctx.ip });
+    const staff = s.created_by ? await q.get('SELECT name, email FROM users WHERE id=? AND active=1', s.created_by) : null;
+    const p = await q.get('SELECT name FROM patients WHERE id=?', s.patient_id);
+    return { s, staff, patient: p?.name || name, when };
+  });
+  if (out.staff) {
+    try {
+      await notify.sendTemplate('assinatura_concluida', { to: out.staff.email, clinicId: clinic.id, url: `${APP_URL}/#/pacientes/${out.s.patient_id}/lgpd`,
+        vars: { nome: out.staff.name, paciente: out.patient, documento: out.s.title, data: `${fmtDay(out.when)} às ${out.when.slice(11, 16)}` } });
+    } catch (e) { console.error('Assinatura: aviso à clínica não enviado', e.message); }
+  }
+  return { ok: true, signed_at: out.when };
+}, { public: true });
+
 // ====================== Assinatura (Stripe) ======================
 route('GET', '/api/billing', async (ctx) => clinicInfo(ctx.clinic), { always: true });
 route('POST', '/api/billing/checkout', async (ctx) => {

@@ -6,6 +6,7 @@ import { SCHEMAS, fieldValue, EVOLUCAO, schemaFor, AREA_OPTIONS, areaLabel } fro
 // Une os campos de vários registros (cada um pode ter uma área diferente)
 const unionFields = (type, list) => { const seen = new Set(); const out = []; for (const r of list) for (const f of schemaFor(type, r.data)) if (f.type !== 'section' && !seen.has(f.key)) { seen.add(f.key); out.push(f); } return out; };
 import { lineChart } from '../charts.js';
+import { requestSignature } from './signatures.js';
 
 const LIST_META = {
   anamnese: { type: 'anamnese', title: 'Anamnese', desc: 'Fichas de anamnese: informações clínicas, histórico de saúde e hábitos de vida.' },
@@ -96,6 +97,7 @@ export async function recordViewPage(view, [id]) {
       h('div', { class: 'row' },
         h('button', { class: 'btn', onclick: showVersions }, icon('history', 16), 'Versões'),
         h('button', { class: 'btn', onclick: () => openPrint('registro', { id }) }, icon('printer', 16), 'PDF'),
+        r.type === 'plano' ? h('button', { class: 'btn', title: 'O paciente assina o plano pelo celular', onclick: () => requestSignature(p, 'plano', r.id) }, icon('edit', 16), 'Assinatura do paciente') : null,
         h('button', { class: 'btn', onclick: remove }, icon('trash', 16)),
         h('button', { class: 'btn primary', onclick: () => go(`#/registro/${id}/editar`) }, icon('edit', 16), 'Editar'))),
     h('div', { class: 'card' }, h('div', { class: 'card-body' }, renderRecordData(r.type, r.data))));
