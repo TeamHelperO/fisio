@@ -378,3 +378,5 @@ textarea.input { resize: vertical; min-height: 64px; }
 .mail-brand { font-weight: 700; color: #0f766e; margin-bottom: 10px; }
 .mail-btn { display: inline-block; background: #0f766e; color: #fff; padding: 9px 16px; border-radius: 7px; font-weight: 700; margin-top: 4px; }
 @media (max-width: 900px) { .tpl-edit { grid-template-columns: 1fr; } }
+.switch-row { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.switch-row input { width: 16px; height: 16px; accent-color: #6366f1; }

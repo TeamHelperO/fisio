@@ -6,43 +6,100 @@ const { sql, currentSql } = require('./core');
 
 const DEFAULTS = {
   confirmar_email: {
-    name: 'Confirmação de e-mail (cadastro)', when: 'Enviado quando alguém cria uma conta.',
+    group: 'Conta e acesso', name: 'Confirmação de e-mail (cadastro)', when: 'Enviado quando alguém cria uma conta.',
     vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', validade: 'Validade do link (ex.: 48 horas)' }, link: true,
     subject: 'Confirme seu e-mail — FisioGestão',
     body: 'Olá, {{nome}}!\n\nSua conta no FisioGestão ({{clinica}}) foi criada. Falta só confirmar que este e-mail é seu.\n\nO link vale por {{validade}}. Se você não reconhece este cadastro, ignore esta mensagem.',
     button: 'Confirmar meu e-mail',
   },
   convite_usuario: {
-    name: 'Novo usuário cadastrado pela clínica', when: 'Enviado quando o administrador da clínica cadastra um usuário ou muda o e-mail dele.',
+    group: 'Conta e acesso', name: 'Novo usuário cadastrado pela clínica', when: 'Enviado quando o administrador da clínica cadastra um usuário ou muda o e-mail dele.',
     vars: { nome: 'Nome do usuário', clinica: 'Nome da clínica', convidado_por: 'Quem fez o cadastro', validade: 'Validade do link' }, link: true,
     subject: 'Você foi cadastrado no FisioGestão — {{clinica}}',
     body: 'Olá, {{nome}}!\n\n{{convidado_por}} cadastrou você no FisioGestão da clínica {{clinica}}. Confirme seu e-mail para começar.\n\nO link vale por {{validade}}. Se você não reconhece este cadastro, ignore esta mensagem.',
     button: 'Confirmar meu e-mail',
   },
   esqueci_senha: {
-    name: 'Esqueci minha senha', when: 'Enviado quando alguém pede uma nova senha na tela de login.',
+    group: 'Conta e acesso', name: 'Esqueci minha senha', when: 'Enviado quando alguém pede uma nova senha na tela de login.',
     vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', validade: 'Validade do link (ex.: 1 hora)' }, link: true,
     subject: 'Criar nova senha — FisioGestão',
     body: 'Olá, {{nome}}!\n\nRecebemos um pedido para criar uma nova senha da sua conta no FisioGestão ({{clinica}}).\n\nO link vale por {{validade}} e só pode ser usado uma vez. Se não foi você, ignore este e-mail: sua senha atual continua valendo.',
     button: 'Criar nova senha',
   },
   senha_alterada: {
-    name: 'Senha alterada', when: 'Enviado logo depois que a senha é trocada pelo link de "Esqueci minha senha".',
+    group: 'Conta e acesso', name: 'Senha alterada', when: 'Enviado logo depois que a senha é trocada pelo link de "Esqueci minha senha".',
     vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica' }, link: true,
     subject: 'Sua senha foi alterada — FisioGestão',
     body: 'Olá, {{nome}}!\n\nA senha da sua conta no FisioGestão foi alterada agora. Por segurança, todas as sessões abertas foram encerradas.\n\nSe não foi você, fale imediatamente com o administrador da sua clínica.',
     button: 'Entrar no FisioGestão',
   },
   teste: {
-    name: 'E-mail de teste', when: 'Enviado pelo botão "Enviar e-mail de teste" do painel.',
+    group: 'Conta e acesso', name: 'E-mail de teste', when: 'Enviado pelo botão "Enviar e-mail de teste" do painel.',
     vars: { servico: 'Serviço usado (SMTP ou Resend)', admin: 'Administrador que enviou' }, link: false,
     subject: 'Teste de e-mail — FisioGestão',
     body: 'Olá!\n\nEste é um e-mail de teste enviado pelo painel da plataforma FisioGestão.\n\nServiço: {{servico}}\nEnviado por: {{admin}}\n\nSe você recebeu esta mensagem, o envio de e-mails está funcionando.',
     button: '',
   },
+  boas_vindas: {
+    group: 'Ciclo do cliente', optional: true, name: 'Boas-vindas com primeiros passos',
+    when: 'Enviado uma vez, cerca de 1 hora depois do cadastro da clínica.',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', dias: 'Dias de teste grátis restantes', data_fim: 'Data em que o teste termina' }, link: true,
+    subject: 'Boas-vindas ao FisioGestão, {{nome}}!',
+    body: 'Olá, {{nome}}!\n\nQue bom ter a {{clinica}} no FisioGestão. Você tem {{dias}} dias de teste grátis, até {{data_fim}}.\n\nPara começar com o pé direito:\n1. Cadastre seu primeiro paciente.\n2. Registre a anamnese e a avaliação.\n3. Monte um programa de exercícios e gere a folha para o paciente levar para casa.\n4. Organize a agenda da semana.\n\nQualquer dúvida, é só responder pelo nosso suporte.',
+    button: 'Abrir o FisioGestão',
+  },
+  trial_3_dias: {
+    group: 'Ciclo do cliente', optional: true, name: 'Teste grátis: faltam 3 dias',
+    when: 'Enviado 3 dias antes do fim do teste grátis, se a clínica ainda não assinou.',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', dias: 'Dias restantes', data_fim: 'Data em que o teste termina' }, link: true,
+    subject: 'Seu teste grátis termina em {{dias}} dias',
+    body: 'Olá, {{nome}}!\n\nO teste grátis da {{clinica}} no FisioGestão termina em {{dias}} dias, no dia {{data_fim}}.\n\nPara continuar registrando atendimentos sem interrupção, assine agora. Seus pacientes, prontuários e agenda continuam exatamente onde estão.',
+    button: 'Assinar o FisioGestão',
+  },
+  trial_ultimo_dia: {
+    group: 'Ciclo do cliente', optional: true, name: 'Teste grátis: último dia',
+    when: 'Enviado no último dia do teste grátis, se a clínica ainda não assinou.',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', data_fim: 'Data em que o teste termina' }, link: true,
+    subject: 'Último dia do seu teste grátis',
+    body: 'Olá, {{nome}}!\n\nHoje é o último dia do teste grátis da {{clinica}} ({{data_fim}}).\n\nAssine para continuar usando o FisioGestão sem interrupção. Leva menos de 2 minutos.',
+    button: 'Assinar agora',
+  },
+  trial_terminou: {
+    group: 'Ciclo do cliente', optional: true, name: 'Teste grátis terminou',
+    when: 'Enviado quando o teste grátis termina sem assinatura.',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', data_fim: 'Data em que o teste terminou' }, link: true,
+    subject: 'Seu teste grátis terminou — seus dados estão guardados',
+    body: 'Olá, {{nome}}!\n\nO teste grátis da {{clinica}} terminou em {{data_fim}}.\n\nSeus dados continuam guardados e disponíveis para consulta e exportação. Para voltar a registrar atendimentos, é só assinar.',
+    button: 'Assinar o FisioGestão',
+  },
+  assinatura_confirmada: {
+    group: 'Ciclo do cliente', optional: true, name: 'Assinatura confirmada',
+    when: 'Enviado quando o primeiro pagamento da assinatura é aprovado.',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', proxima_cobranca: 'Data da próxima cobrança' }, link: true,
+    subject: 'Assinatura confirmada — obrigado!',
+    body: 'Olá, {{nome}}!\n\nA assinatura da {{clinica}} no FisioGestão está ativa. Obrigado pela confiança!\n\nPróxima cobrança: {{proxima_cobranca}}. Você pode acompanhar e gerenciar a assinatura em Configurações → Assinatura.',
+    button: 'Abrir o FisioGestão',
+  },
+  pagamento_recusado: {
+    group: 'Ciclo do cliente', optional: true, name: 'Pagamento recusado',
+    when: 'Enviado quando a cobrança da assinatura não é aprovada.',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica' }, link: true,
+    subject: 'Não conseguimos cobrar a assinatura da {{clinica}}',
+    body: 'Olá, {{nome}}!\n\nA cobrança da assinatura da {{clinica}} no FisioGestão não foi aprovada. Vamos tentar de novo nos próximos dias, mas para não correr o risco de perder o acesso, confira ou troque a forma de pagamento.\n\nSe já resolveu, pode ignorar esta mensagem.',
+    button: 'Atualizar forma de pagamento',
+  },
+  assinatura_cancelada: {
+    group: 'Ciclo do cliente', optional: true, name: 'Assinatura cancelada',
+    when: 'Enviado quando a assinatura é cancelada.',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', acesso_ate: 'Até quando o acesso completo continua' }, link: true,
+    subject: 'Sua assinatura foi cancelada',
+    body: 'Olá, {{nome}}!\n\nA assinatura da {{clinica}} no FisioGestão foi cancelada. O acesso completo continua até {{acesso_ate}}; depois disso os dados ficam disponíveis para consulta e exportação.\n\nSe mudar de ideia, é só assinar de novo — nada se perde.',
+    button: 'Ver minha assinatura',
+  },
 };
 // valores de exemplo para a prévia e para o envio de teste de um modelo
-const SAMPLE = { nome: 'Ana Souza', clinica: 'Clínica Movimento', validade: '48 horas', convidado_por: 'Dra. Helena Prado', servico: 'SMTP', admin: 'Administrador' };
+const SAMPLE = { nome: 'Ana Souza', clinica: 'Clínica Movimento', validade: '48 horas', convidado_por: 'Dra. Helena Prado', servico: 'SMTP', admin: 'Administrador',
+  dias: '3', data_fim: '27/11/2026', proxima_cobranca: '24/12/2026', acesso_ate: '24/12/2026' };
 
 const VAR_RE = /\{\{\s*([a-z_]+)\s*\}\}/g;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -68,7 +125,8 @@ async function load(key) {
   if (!d) throw new Error(`Modelo de e-mail desconhecido: ${key}`);
   const row = (await currentSql().unsafe('SELECT * FROM saas.email_templates WHERE key=$1', [key]))[0];
   return { ...d, key, subject: row?.subject ?? d.subject, body: row?.body ?? d.body, button: row?.button ?? d.button,
-    customized: !!row, updated_at: row?.updated_at || null, updated_by: row?.updated_by || null };
+    enabled: d.optional ? (row ? row.enabled !== false : true) : true,
+    customized: !!row && (row.subject !== d.subject || row.body !== d.body || row.button !== d.button), updated_at: row?.updated_at || null, updated_by: row?.updated_by || null };
 }
 
 // Monta o e-mail final (assunto, texto puro e HTML) a partir do modelo e das variáveis
@@ -95,21 +153,37 @@ async function render(key, vars, url) {
 async function list() {
   return Promise.all(Object.keys(DEFAULTS).map(async (k) => {
     const t = await load(k);
-    return { key: k, name: t.name, when: t.when, vars: t.vars, link: t.link, subject: t.subject, body: t.body, button: t.button,
+    return { key: k, group: t.group, optional: !!t.optional, enabled: t.enabled, name: t.name, when: t.when, vars: t.vars, link: t.link, subject: t.subject, body: t.body, button: t.button,
       customized: t.customized, updated_at: t.updated_at, updated_by: t.updated_by };
   }));
 }
 async function save(key, t, by) {
   if (!DEFAULTS[key]) throw Object.assign(new Error('Modelo desconhecido'), { status: 404 });
   const v = check(key, t);
-  await sql.unsafe(`INSERT INTO saas.email_templates(key, subject, body, button, updated_by) VALUES ($1,$2,$3,$4,$5)
-    ON CONFLICT (key) DO UPDATE SET subject=excluded.subject, body=excluded.body, button=excluded.button, updated_at=now(), updated_by=excluded.updated_by`,
-  [key, v.subject, v.body, v.button, by]);
+  const enabled = DEFAULTS[key].optional ? t.enabled !== false : true;
+  await sql.unsafe(`INSERT INTO saas.email_templates(key, subject, body, button, enabled, updated_by) VALUES ($1,$2,$3,$4,$5,$6)
+    ON CONFLICT (key) DO UPDATE SET subject=excluded.subject, body=excluded.body, button=excluded.button, enabled=excluded.enabled, updated_at=now(), updated_by=excluded.updated_by`,
+  [key, v.subject, v.body, v.button, enabled, by]);
 }
 async function reset(key) {
   if (!DEFAULTS[key]) throw Object.assign(new Error('Modelo desconhecido'), { status: 404 });
-  await sql.unsafe('DELETE FROM saas.email_templates WHERE key=$1', [key]);
+  // volta o texto ao padrão, mas mantém a escolha de ligado/desligado
+  const row = (await sql.unsafe('SELECT enabled FROM saas.email_templates WHERE key=$1', [key]))[0];
+  if (row && row.enabled === false) {
+    const d = DEFAULTS[key];
+    await sql.unsafe('UPDATE saas.email_templates SET subject=$2, body=$3, button=$4, updated_at=now() WHERE key=$1', [key, d.subject, d.body, d.button]);
+  } else await sql.unsafe('DELETE FROM saas.email_templates WHERE key=$1', [key]);
 }
+// liga/desliga um modelo opcional sem mexer no texto
+async function setEnabled(key, enabled, by) {
+  const d = DEFAULTS[key];
+  if (!d) throw Object.assign(new Error('Modelo desconhecido'), { status: 404 });
+  if (!d.optional) throw Object.assign(new Error('Este e-mail é essencial e não pode ser desligado'), { status: 400 });
+  const t = await load(key);
+  await sql.unsafe(`INSERT INTO saas.email_templates(key, subject, body, button, enabled, updated_by) VALUES ($1,$2,$3,$4,$5,$6)
+    ON CONFLICT (key) DO UPDATE SET enabled=excluded.enabled, updated_at=now(), updated_by=excluded.updated_by`, [key, t.subject, t.body, t.button, !!enabled, by]);
+}
+async function isEnabled(key) { return (await load(key)).enabled; }
 // prévia de um texto ainda não salvo, com dados de exemplo
 function preview(key, t) {
   if (!DEFAULTS[key]) throw Object.assign(new Error('Modelo desconhecido'), { status: 404 });
@@ -117,4 +191,4 @@ function preview(key, t) {
   return compose({ ...DEFAULTS[key], ...v }, SAMPLE, DEFAULTS[key].link ? 'https://app.exemplo.com.br/#/link-de-exemplo' : null);
 }
 
-module.exports = { DEFAULTS, SAMPLE, render, list, save, reset, preview, check };
+module.exports = { DEFAULTS, SAMPLE, render, list, save, reset, preview, check, setEnabled, isEnabled };

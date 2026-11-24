@@ -12,12 +12,13 @@ const stripe = require('./stripe');
 const mp = require('./mercadopago');
 const mailer = require('./mailer');
 const templates = require('./emailTemplates');
+const notify = require('./notify');
 
 const SESSION_HOURS = 4;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 module.exports = function registerAdmin(deps) {
-  const { hashPassword, checkPassword, validatePassword, sha, DUMMY_HASH, checkRate, failRate, clearRate, clinicAccess, unsubscribeUrl, COOKIE_SECURE } = deps;
+  const { hashPassword, checkPassword, validatePassword, sha, DUMMY_HASH, checkRate, failRate, clearRate, clinicAccess, unsubscribeUrl, COOKIE_SECURE, runDaily } = deps;
 
   // ---------- Sessão do administrador (cookie próprio, restrito a /api/admin) ----------
   const setCookie = (res, token, maxAge) => res.setHeader('Set-Cookie',
@@ -301,6 +302,19 @@ module.exports = function registerAdmin(deps) {
     }
   });
 
+  // ---------- Histórico de envios e rotina diária ----------
+  adminRoute('GET', '/api/admin/email/log', async (ctx) => notify.recent(ctx.query.get('limit')));
+  adminRoute('POST', '/api/admin/email/run-daily', async (ctx) => {
+    const r = await runDaily();
+    await log(ctx, 'rodou_emails_automaticos', null, { enviados: r.enviados, falhas: r.falhas });
+    return r;
+  });
+  adminRoute('PUT', '/api/admin/email/templates/:key/enabled', async (ctx) => {
+    try { await templates.setEnabled(ctx.params.key, !!ctx.body.enabled, ctx.admin.email); } catch (e) { throw new HttpError(e.status || 500, e.message); }
+    await log(ctx, ctx.body.enabled ? 'ligou_email_automatico' : 'desligou_email_automatico', ctx.params.key);
+    return (await templates.list()).find((t) => t.key === ctx.params.key);
+  });
+
   // ---------- Modelos de e-mail ----------
   const tplError = (e) => { throw new HttpError(e.status || 500, e.message); };
   adminRoute('GET', '/api/admin/email/templates', async () => templates.list());
@@ -338,7 +352,7 @@ module.exports = function registerAdmin(deps) {
     if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(to) || to.length > 200) throw new HttpError(400, 'Informe um e-mail válido');
     const st = mailer.status();
     try {
-      const r = await mailer.send({ to, ...(await templates.render('teste', { servico: st.detail || st.provider, admin: ctx.admin.name })) });
+      const r = await notify.sendTemplate('teste', { to, vars: { servico: st.detail || st.provider, admin: ctx.admin.name } });
       await log(ctx, 'testou_email', to, { servico: r.provider });
       return { ok: true, ...r };
     } catch (e) {

@@ -8,6 +8,7 @@ const stripe = require('./stripe');
 const mp = require('./mercadopago');
 const mailer = require('./mailer');
 const templates = require('./emailTemplates');
+const notify = require('./notify');
 const config = require('./config');
 
 const ON_VERCEL = !!process.env.VERCEL;
@@ -316,7 +317,7 @@ route('POST', '/api/password/forgot', async (ctx) => {
       [sha(token), clinic.id, user.id, email, Date.now() + RESET_TTL_MIN * 60e3, ctx.ip]);
     const url = `${APP_URL}/#/redefinir-senha?t=${token}`;
     try {
-      await mailer.send({ to: email, ...(await templates.render('esqueci_senha', { nome: user.name, clinica: clinic.name, validade: `${RESET_TTL_MIN / 60} hora` }, url)) });
+      await notify.sendTemplate('esqueci_senha', { to: email, clinicId: clinic.id, url, vars: { nome: user.name, clinica: clinic.name, validade: `${RESET_TTL_MIN / 60} hora` } });
       await withClinic(clinic, () => { ctx.user = null; return audit(ctx, 'pediu_nova_senha', 'user', user.id, null, { ip: ctx.ip }); });
     } catch (e) {
       console.error('Esqueci minha senha: falha ao enviar e-mail', e.message);
@@ -368,7 +369,7 @@ route('POST', '/api/password/reset', async (ctx) => {
   // encerra todas as sessões abertas e libera bloqueios de login
   await sql.unsafe('DELETE FROM saas.sessions WHERE clinic_id=$1 AND user_id=$2', [clinic.id, user.id]);
   await sql.unsafe("DELETE FROM saas.login_attempts WHERE key LIKE 'login|%|' || $1", [user.email]);
-  try { await mailer.send({ to: user.email, ...(await templates.render('senha_alterada', { nome: user.name, clinica: clinic.name }, APP_URL)) }); }
+  try { await notify.sendTemplate('senha_alterada', { to: user.email, clinicId: clinic.id, url: APP_URL, vars: { nome: user.name, clinica: clinic.name } }); }
   catch (e) { console.error('Aviso de senha alterada não enviado', e.message); }
   return { ok: true };
 }, { public: true });
@@ -386,7 +387,7 @@ async function sendVerification(clinic, user, { invitedBy = null } = {}) {
   const url = `${APP_URL}/#/confirmar-email?t=${token}`;
   try {
     const vars = { nome: user.name, clinica: clinic.name, validade: `${VERIFY_TTL_H} horas`, convidado_por: invitedBy || '' };
-    await mailer.send({ to: user.email, ...(await templates.render(invitedBy ? 'convite_usuario' : 'confirmar_email', vars, url)) });
+    await notify.sendTemplate(invitedBy ? 'convite_usuario' : 'confirmar_email', { to: user.email, clinicId: clinic.id, url, vars });
     return true;
   } catch (e) {
     console.error('Confirmação de e-mail não enviada', e.message);
@@ -1322,12 +1323,18 @@ async function syncSubscription(sub) {
   const byCustomer = (await sql.unsafe('SELECT id FROM saas.clinics WHERE stripe_customer_id=$1', [sub.customer]))[0];
   const id = clinicId || byCustomer?.id;
   if (!id) { console.warn('Webhook Stripe: assinatura sem clínica correspondente', sub.id); return; }
+  const before = await billingState(id);
   const periodEnd = sub.current_period_end || sub.items?.data?.[0]?.current_period_end || null;
   // não deixa um evento antigo do Stripe derrubar uma assinatura ativa no Mercado Pago
   await sql.unsafe(`UPDATE saas.clinics SET stripe_customer_id=COALESCE(stripe_customer_id,$2), stripe_subscription_id=$3, subscription_status=$4,
     current_period_end=$5, cancel_at_period_end=$6, billing_provider='stripe' WHERE id=$1
     AND (billing_provider IS DISTINCT FROM 'mercadopago' OR subscription_status IS NULL OR subscription_status NOT IN ('active','past_due') OR $4 IN ('active','trialing'))`,
   [id, sub.customer, sub.id, sub.status, periodEnd ? new Date(periodEnd * 1000).toISOString() : null, !!sub.cancel_at_period_end]);
+  await lifecycle.onStatusChange(id, before, await billingState(id));
+}
+// situação da cobrança de uma clínica (para comparar antes e depois de um webhook)
+async function billingState(id) {
+  return (await currentSql().unsafe('SELECT subscription_status, cancel_at_period_end, current_period_end FROM saas.clinics WHERE id=$1', [id]))[0] || null;
 }
 route('POST', '/api/stripe/webhook', async (ctx) => {
   const event = stripe.verifyWebhook(ctx.rawBody, ctx.req.headers['stripe-signature']);
@@ -1379,6 +1386,7 @@ async function syncPreapproval(p) {
   const status = mp.STATUS[p.status];
   if (!status) return; // pendente (ainda não pagou) ou situação desconhecida: nada muda
   const next = p.next_payment_date ? new Date(p.next_payment_date).toISOString() : null;
+  const before = await billingState(clinicId);
   // ignora eventos de assinaturas antigas da mesma clínica e não derruba uma assinatura ativa no Stripe
   await currentSql().unsafe(`UPDATE saas.clinics SET billing_provider='mercadopago', mp_preapproval_id=$2, subscription_status=$3,
       current_period_end = CASE WHEN $3='canceled' THEN COALESCE(current_period_end, $4::timestamptz) ELSE COALESCE($4::timestamptz, current_period_end) END,
@@ -1386,6 +1394,7 @@ async function syncPreapproval(p) {
     WHERE id=$1 AND (mp_preapproval_id IS NULL OR mp_preapproval_id=$2 OR $3='active')
       AND (billing_provider IS DISTINCT FROM 'stripe' OR subscription_status IS NULL OR subscription_status NOT IN ('active','trialing','past_due') OR $3='active')`,
   [clinicId, p.id, status, next]);
+  await lifecycle.onStatusChange(clinicId, before, await billingState(clinicId));
 }
 const getPreapproval = (id) => mp.request('GET', `/preapproval/${encodeURIComponent(id)}`);
 
@@ -1425,7 +1434,8 @@ route('POST', '/api/mercadopago/webhook', async (ctx) => {
       await syncPreapproval(await getPreapproval(ap.preapproval_id));
       // cobrança recusada: o Mercado Pago tenta de novo; a clínica vê o aviso de pagamento atrasado
       if (ap.payment?.status === 'rejected' || ap.status === 'recycling') {
-        await sql.unsafe("UPDATE saas.clinics SET subscription_status='past_due' WHERE mp_preapproval_id=$1 AND subscription_status='active'", [ap.preapproval_id]);
+        const hit = await sql.unsafe("UPDATE saas.clinics SET subscription_status='past_due' WHERE mp_preapproval_id=$1 AND subscription_status='active' RETURNING id", [ap.preapproval_id]);
+        if (hit.length) await lifecycle.onStatusChange(hit[0].id, { subscription_status: 'active' }, await billingState(hit[0].id));
       }
     }
   }
@@ -1433,7 +1443,7 @@ route('POST', '/api/mercadopago/webhook', async (ctx) => {
 }, { public: true, webhook: true, raw: true });
 
 // ====================== Área administrativa da plataforma ======================
-const adminArea = require('./admin')({ hashPassword, checkPassword, validatePassword, sha, DUMMY_HASH, checkRate, failRate, clearRate, clinicAccess, unsubscribeUrl, COOKIE_SECURE });
+const adminArea = require('./admin')({ hashPassword, checkPassword, validatePassword, sha, DUMMY_HASH, checkRate, failRate, clearRate, clinicAccess, unsubscribeUrl, COOKIE_SECURE, runDaily: () => lifecycle.daily() });
 
 // ====================== Tratamento das requisições ======================
 function clientIp(req) {
@@ -1509,13 +1519,17 @@ async function handler(req, res) {
 }
 
 // Limpeza de sessões vencidas e contadores de tentativas antigos (chamada pelo cron da Vercel ou pelo servidor local)
+// e-mails automáticos do ciclo do cliente (boas-vindas, teste grátis, pagamentos)
+const lifecycle = require('./lifecycle')({ clinicAccess, APP_URL });
 async function housekeeping() {
   await ensureCore();
   await sql.unsafe('DELETE FROM saas.sessions WHERE expires_at < $1', [Date.now()]);
   await sql.unsafe('DELETE FROM saas.login_attempts WHERE lock_until < $1 AND last < $2', [Date.now(), Date.now() - 24 * 3600e3]);
   await sql.unsafe('DELETE FROM saas.password_resets WHERE expires_at < $1', [Date.now() - 24 * 3600e3]);
   await sql.unsafe('DELETE FROM saas.email_verifications WHERE expires_at < $1', [Date.now() - 7 * 24 * 3600e3]);
+  await sql.unsafe("DELETE FROM saas.email_log WHERE created_at < now() - interval '180 days'");
   await adminArea.cleanup();
+  return lifecycle.daily();
 }
 route('GET', '/api/cron/housekeeping', async (ctx) => {
   const secret = process.env.CRON_SECRET;

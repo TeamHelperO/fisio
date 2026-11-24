@@ -249,6 +249,21 @@ CREATE TABLE IF NOT EXISTS saas.email_templates (
   updated_at timestamptz NOT NULL DEFAULT now(),
   updated_by text
 );
+ALTER TABLE saas.email_templates ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
+-- Histórico de e-mails enviados (sem o conteúdo). "ref" impede que o mesmo e-mail automático saia duas vezes.
+CREATE TABLE IF NOT EXISTS saas.email_log (
+  id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  clinic_id integer REFERENCES saas.clinics(id) ON DELETE SET NULL,
+  template text NOT NULL,
+  recipient text NOT NULL,
+  ref text,
+  status text NOT NULL,
+  provider text,
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS email_log_ref ON saas.email_log(clinic_id, template, ref) WHERE ref IS NOT NULL;
+CREATE INDEX IF NOT EXISTS email_log_created ON saas.email_log(created_at);
 -- Mercado Pago (assinaturas "preapproval") como segunda forma de pagamento
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS billing_provider text;
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS mp_preapproval_id text;

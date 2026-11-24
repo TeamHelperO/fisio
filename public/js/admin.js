@@ -285,13 +285,44 @@ function connectionCard(mail, withHelp) {
 
 // ---------------- E-mails: modelos ----------------
 async function emails(view) {
-  const [mail, list] = await Promise.all([get(A('/email/status')), get(A('/email/templates'))]);
-  view.append(head('E-mails', 'Conexão com o servidor de e-mail e os textos dos e-mails automáticos'), connectionCard(mail, false),
-    card('Modelos de e-mail', table(['Modelo', 'Quando é enviado', 'Assunto', 'Texto', ''], list.map((t) => h('tr', null,
+  const [mail, list, logRows] = await Promise.all([get(A('/email/status')), get(A('/email/templates')), get(A('/email/log?limit=60'))]);
+  const NAMES = Object.fromEntries(list.map((t) => [t.key, t.name]));
+  const toggle = (t) => {
+    if (!t.optional) return h('small', { class: 'muted' }, 'Sempre ativo');
+    const box = h('input', { type: 'checkbox', checked: t.enabled, 'aria-label': `Enviar automaticamente: ${t.name}` });
+    box.onchange = async () => {
+      box.disabled = true;
+      try { await put(A(`/email/templates/${t.key}/enabled`), { enabled: box.checked }); toast(box.checked ? 'E-mail ligado' : 'E-mail desligado'); t.enabled = box.checked; }
+      catch (e) { toast(e.message, 'error'); box.checked = !box.checked; }
+      box.disabled = false;
+    };
+    return h('label', { class: 'switch-row' }, box, h('span', null, 'Ligado'));
+  };
+  const groupTable = (group, desc) => card(group, h('div', null,
+    desc ? h('div', { class: 'card-body', style: { paddingBottom: 0 } }, h('small', { class: 'muted' }, desc)) : null,
+    table(['Modelo', 'Quando é enviado', 'Assunto', 'Texto', 'Envio', ''], list.filter((t) => t.group === group).map((t) => h('tr', null,
       h('td', null, h('b', null, t.name)), h('td', null, h('small', null, t.when)), h('td', null, t.subject),
       h('td', { class: 'nowrap' }, t.customized ? [pill('blue', 'Personalizado'), h('div', null, h('small', { class: 'muted' }, `${fmtTs(t.updated_at)} · ${t.updated_by || ''}`))] : pill('gray', 'Padrão')),
-      h('td', { class: 'actions' }, h('button', { class: 'btn sm', onclick: () => editTemplate(t) }, icon('edit', 14), 'Editar')))))),
-    h('p', null, h('small', { class: 'muted' }, 'Os modelos valem para todas as clínicas. Use as variáveis entre chaves duplas, como {{nome}}; elas são trocadas pelos dados de cada pessoa no envio.')));
+      h('td', { class: 'nowrap' }, toggle(t)),
+      h('td', { class: 'actions' }, h('button', { class: 'btn sm', onclick: () => editTemplate(t) }, icon('edit', 14), 'Editar')))))));
+  const runBtn = h('button', { class: 'btn sm' }, icon('history', 14), 'Rodar envios automáticos agora');
+  runBtn.onclick = async () => {
+    runBtn.disabled = true;
+    try {
+      const r = await post(A('/email/run-daily'));
+      toast(`${r.clinicas} clínica(s) verificada(s): ${r.enviados} e-mail(s) enviado(s)${r.falhas ? `, ${r.falhas} falha(s)` : ''}`, r.falhas ? 'error' : 'ok');
+      refresh();
+    } catch (e) { toast(e.message, 'error'); runBtn.disabled = false; }
+  };
+  const ST = { enviado: ['green', 'Enviado'], falhou: ['red', 'Falhou'], enviando: ['amber', 'Enviando'] };
+  view.append(head('E-mails', 'Conexão com o servidor de e-mail, os textos dos e-mails e o histórico de envios'), connectionCard(mail, false),
+    groupTable('Ciclo do cliente', 'Enviados automaticamente para os administradores de cada clínica — uma única vez por situação. Os avisos de teste grátis e as boas-vindas saem na rotina diária (todo dia de manhã); os de assinatura saem assim que o pagamento muda.'),
+    groupTable('Conta e acesso', 'E-mails essenciais de cadastro e senha: podem ter o texto alterado, mas não podem ser desligados.'),
+    card('Histórico de envios', logRows.length ? table(['Data', 'E-mail', 'Para', 'Clínica', 'Situação'], logRows.map((r) => h('tr', null,
+      h('td', { class: 'nowrap' }, fmtTs(r.created_at)), h('td', null, NAMES[r.template] || r.template), h('td', null, r.recipient), h('td', null, r.clinic || '—'),
+      h('td', null, pill(...(ST[r.status] || ['gray', r.status])), r.error ? h('div', null, h('small', { class: 'muted' }, r.error)) : null))))
+      : empty('Nenhum e-mail enviado ainda.'), runBtn),
+    h('p', null, h('small', { class: 'muted' }, 'Use as variáveis entre chaves duplas, como {{nome}}; elas são trocadas pelos dados de cada pessoa no envio. O histórico guarda só para quem e quando foi enviado — nunca o conteúdo — por 180 dias.')));
 }
 
 function editTemplate(t) {
@@ -301,7 +332,7 @@ function editTemplate(t) {
   const prev = h('div', { class: 'mail-preview' });
   const err = h('div');
   let last = null;
-  const values = () => ({ subject: subject.value, body: body.value, button: button.value });
+  const values = () => ({ subject: subject.value, body: body.value, button: button.value, enabled: t.enabled });
   const insertVar = (v) => {
     const el = document.activeElement === subject ? subject : body;
     const tag = `{{${v}}}`; const a = el.selectionStart ?? el.value.length; const b = el.selectionEnd ?? a;
