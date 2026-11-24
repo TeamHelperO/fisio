@@ -395,6 +395,7 @@ async function emails(view) {
   view.append(head('E-mails', 'Conexão com o servidor de e-mail, os textos dos e-mails e o histórico de envios'), connectionCard(mail, false),
     groupTable('Ciclo do cliente', 'Enviados automaticamente para os administradores de cada clínica — uma única vez por situação. Os avisos de teste grátis e as boas-vindas saem na rotina diária (todo dia de manhã); os de assinatura saem assim que o pagamento muda.'),
     groupTable('Conta e acesso', 'E-mails essenciais de cadastro e senha: podem ter o texto alterado, mas não podem ser desligados.'),
+    groupTable('Agendamento online', 'Avisos da página pública de agendamento: para a clínica (novo pedido) e para o paciente (recebido, confirmado, não confirmado).'),
     groupTable('Administradores da plataforma', 'Enviados aos administradores deste painel (/admin).'),
     card('Histórico de envios', logRows.length ? table(['Data', 'E-mail', 'Para', 'Clínica', 'Situação'], logRows.map((r) => h('tr', null,
       h('td', { class: 'nowrap' }, fmtTs(r.created_at)), h('td', null, NAMES[r.template] || r.template), h('td', null, r.recipient), h('td', null, r.clinic || '—'),

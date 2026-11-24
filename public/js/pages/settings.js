@@ -6,13 +6,13 @@ import { state, isAdmin, reloadSettings } from '../state.js';
 const refresh = () => dispatchEvent(new Event('fisio:refresh'));
 
 export async function settingsPage(view, [tab], query) {
-  const tabs = [['perfil', 'Profissional e clínica', true], ['usuarios', 'Usuários e acesso', true], ['seguranca', 'Minha conta'], ['lgpd', 'LGPD', true], ['assinatura', 'Assinatura e dados', true], ['auditoria', 'Registro de alterações', true]]
+  const tabs = [['perfil', 'Profissional e clínica', true], ['usuarios', 'Usuários e acesso', true], ['seguranca', 'Minha conta'], ['lgpd', 'LGPD', true], ['agendamento', 'Agendamento online', true], ['assinatura', 'Assinatura e dados', true], ['auditoria', 'Registro de alterações', true]]
     .filter((t) => !t[2] || isAdmin());
   tab = tab || tabs[0][0];
   const body = h('div');
   view.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Configurações'), h('p', null, 'Dados do profissional, usuários, segurança, privacidade e assinatura.'))),
     h('nav', { class: 'tabs' }, tabs.map(([k, l]) => h('a', { href: `#/configuracoes/${k}`, class: k === tab ? 'on' : '' }, l))), body);
-  const T = { perfil, usuarios, seguranca, lgpd, assinatura, auditoria };
+  const T = { perfil, usuarios, seguranca, lgpd, agendamento: agendamentoOnline, assinatura, auditoria };
   if (!tabs.find((t) => t[0] === tab)) return body.append(h('div', { class: 'notice' }, icon('shield'), 'Acesso restrito ao administrador.'));
   await T[tab](body, query);
 }
@@ -210,4 +210,49 @@ async function auditoria(body) {
   };
   body.append(h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('div', { class: 'row' }, userSel, from, h('span', null, 'a'), to), h('button', { class: 'btn sm', onclick: exportCsv }, icon('download', 14), 'Exportar CSV')), wrap));
   await load();
+}
+
+// ---------- Agendamento online ----------
+async function agendamentoOnline(body) {
+  const cfg = await get('/booking/settings');
+  const WD = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+  const enabled = h('input', { type: 'checkbox', checked: cfg.enabled });
+  const slug = h('input', { class: 'input', value: cfg.slug, maxLength: 60, style: { maxWidth: '280px' } });
+  const mode = h('select', { class: 'input' }, [['confirmar', 'A clínica confirma cada pedido (recomendado)'], ['automatico', 'O horário é marcado na hora, sem confirmação']].map(([v, l]) => h('option', { value: v, selected: cfg.mode === v }, l)));
+  const num = (v, min, max) => h('input', { class: 'input', type: 'number', min, max, value: v, style: { maxWidth: '120px' } });
+  const slot = num(cfg.slot_minutes, 10, 240); const minH = num(cfg.min_hours, 0, 720); const ahead = num(cfg.days_ahead, 1, 120);
+  const intro = h('textarea', { class: 'input', rows: 3, maxLength: 600, placeholder: 'Ex.: Atendemos particular e convênios. Chegue 10 minutos antes.' }); intro.value = cfg.intro || '';
+  const profs = cfg.all_professionals.map((u) => ({ u, box: h('input', { type: 'checkbox', checked: !cfg.professionals.length || cfg.professionals.includes(u.id) }) }));
+  const hours = [1, 2, 3, 4, 5, 6, 0].map((d) => ({ d, input: h('input', { class: 'input', value: cfg.hours[d] || '', placeholder: 'fechado' }) }));
+  const linkUrl = () => `${location.origin}/agendar/${slug.value.trim()}`;
+  const linkText = h('a', { href: cfg.url, target: '_blank', rel: 'noopener' }, cfg.url);
+  slug.addEventListener('input', () => { linkText.textContent = linkUrl(); linkText.href = linkUrl(); });
+  const save = async () => {
+    try {
+      await put('/booking/settings', {
+        enabled: enabled.checked, slug: slug.value, mode: mode.value, slot_minutes: Number(slot.value), min_hours: Number(minH.value), days_ahead: Number(ahead.value), intro: intro.value,
+        professionals: profs.every((p) => p.box.checked) ? [] : profs.filter((p) => p.box.checked).map((p) => p.u.id),
+        hours: Object.fromEntries(hours.map((x) => [x.d, x.input.value])),
+      });
+      toast('Agendamento online salvo'); refresh();
+    } catch (e) { toast(e.message, 'error'); }
+  };
+  body.append(h('div', { class: 'stack' },
+    h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Agendamento online')), h('div', { class: 'card-body stack' },
+      h('label', { class: 'switch-row', style: { fontSize: '15px' } }, enabled, h('b', null, 'Ligar a página de agendamento online')),
+      h('p', { style: { margin: 0 } }, 'Seus pacientes escolhem um horário livre da agenda pelo celular, sem precisar ligar. Divulgue o link no WhatsApp, Instagram e Google.'),
+      h('label', { class: 'field' }, h('span', null, 'Endereço da sua página'), h('div', { class: 'row' }, h('span', { class: 'muted' }, `${location.origin}/agendar/`), slug),
+        h('small', { class: 'help' }, 'Link: ', linkText, ' ', h('button', { class: 'btn sm ghost', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(linkUrl()); toast('Link copiado'); } catch { toast('Não foi possível copiar', 'error'); } } }, 'Copiar'))),
+      h('label', { class: 'field' }, h('span', null, 'Como confirmar'), mode),
+      h('div', { class: 'row', style: { gap: '18px', alignItems: 'flex-start' } },
+        h('label', { class: 'field' }, h('span', null, 'Duração de cada horário (min)'), slot),
+        h('label', { class: 'field' }, h('span', null, 'Antecedência mínima (horas)'), minH),
+        h('label', { class: 'field' }, h('span', null, 'Mostrar até quantos dias à frente'), ahead)),
+      h('label', { class: 'field' }, h('span', null, 'Recado na página (opcional)'), intro))),
+    h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Profissionais na página')), h('div', { class: 'card-body' },
+      h('div', { class: 'row', style: { gap: '16px' } }, profs.map((p) => h('label', { class: 'switch-row' }, p.box, h('span', null, p.u.name)))))),
+    h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Dias e horários de atendimento'), h('small', null, 'Ex.: 08:00-12:00, 13:00-18:00 · deixe em branco nos dias fechados')),
+      h('div', { class: 'card-body stack', style: { gap: '8px' } }, hours.map((x) => h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, h('b', { style: { width: '90px', flex: 'none' } }, WD[x.d]), x.input))),
+      h('div', { class: 'card-body', style: { paddingTop: 0 } }, h('small', { class: 'help' }, 'Horários já ocupados na agenda (e pedidos aguardando resposta) nunca aparecem como livres.'))),
+    h('div', { class: 'row', style: { justifyContent: 'flex-end' } }, h('button', { class: 'btn primary', onclick: save }, icon('check', 16), 'Salvar'))));
 }

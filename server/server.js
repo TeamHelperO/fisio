@@ -21,7 +21,7 @@ const server = http.createServer(async (req, res) => {
     const pathname = new URL(req.url, 'http://localhost').pathname;
     if (pathname.startsWith('/api/')) return await handler(req, res);
     // mesmo atalho da Vercel (vercel.json): /admin → admin.html
-    return serveStatic(PUBLIC_DIR, req, res, pathname === '/admin' ? '/admin.html' : pathname);
+    return serveStatic(PUBLIC_DIR, req, res, pathname === '/admin' ? '/admin.html' : /^\/agendar\/[^/]+$/.test(pathname) ? '/agendar.html' : pathname);
   } catch (e) {
     console.error(e);
     if (!res.headersSent) send(res, 400, 'Requisição inválida');

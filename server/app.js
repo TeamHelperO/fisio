@@ -1285,6 +1285,242 @@ route('DELETE', '/api/programs/:id', async (ctx) => {
   return { ok: true };
 });
 
+const NOW_SQL = 'now_local()';
+// ====================== Agendamento online ======================
+// Página pública /agendar/<endereço> em que o paciente escolhe um horário livre.
+// A clínica define dias, horários, profissionais e se confirma cada pedido ou se o horário é marcado na hora.
+const BOOKING_DEFAULTS = {
+  enabled: false, mode: 'confirmar', slot_minutes: 50, min_hours: 12, days_ahead: 30, professionals: [], intro: '',
+  hours: { 1: '08:00-12:00, 13:00-18:00', 2: '08:00-12:00, 13:00-18:00', 3: '08:00-12:00, 13:00-18:00', 4: '08:00-12:00, 13:00-18:00', 5: '08:00-12:00, 13:00-18:00', 6: '', 0: '' },
+};
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const toMin = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+const fromMin = (m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const lms = (s) => Date.parse(`${s.length === 16 ? s : `${s}T00:00`}:00Z`); // horário local como número (só para comparar)
+function parseWindows(txt) {
+  const out = [];
+  for (const part of String(txt || '').split(/[,;]/).map((x) => x.trim()).filter(Boolean)) {
+    const m = /^(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})$/.exec(part);
+    if (!m || !TIME_RE.test(m[1]) || !TIME_RE.test(m[2]) || toMin(m[2]) <= toMin(m[1])) throw new HttpError(400, `Horário inválido: "${part}". Use o formato 08:00-12:00, 13:00-18:00`);
+    out.push([toMin(m[1]), toMin(m[2])]);
+  }
+  return out;
+}
+async function bookingSettings() {
+  const raw = (await q.get("SELECT value FROM settings WHERE key='booking'"))?.value;
+  let v = {}; try { v = raw ? JSON.parse(raw) : {}; } catch { /* valor antigo inválido */ }
+  return { ...BOOKING_DEFAULTS, ...v, hours: { ...BOOKING_DEFAULTS.hours, ...(v.hours || {}) } };
+}
+async function bookingProfessionals(cfg) {
+  const all = await q.all("SELECT id, name, crefito FROM users WHERE active=1 AND role IN ('admin','fisio') ORDER BY name");
+  return cfg.professionals?.length ? all.filter((u) => cfg.professionals.includes(u.id)) : all;
+}
+// horários livres de um profissional entre duas datas (YYYY-MM-DD), no fuso da clínica
+async function freeSlots(cfg, profId, fromDate, toDate) {
+  const n = nowParts();
+  const earliest = lms(`${n.date}T${n.time.slice(0, 5)}`) + cfg.min_hours * 3600e3;
+  const lastDay = new Date(`${n.date}T12:00`); lastDay.setDate(lastDay.getDate() + cfg.days_ahead);
+  const limit = ymd(lastDay);
+  const busy = (await q.all(`SELECT start, duration FROM appointments WHERE professional_id=? AND start >= ? AND start < ? AND status NOT IN ('cancelado','falta')
+    UNION ALL SELECT start, duration FROM booking_requests WHERE professional_id=? AND status='pendente' AND start >= ? AND start < ?`,
+  profId, `${fromDate}T00:00`, `${toDate}T23:59`, profId, `${fromDate}T00:00`, `${toDate}T23:59`)).map((b) => [lms(b.start), lms(b.start) + b.duration * 60e3]);
+  const out = {};
+  for (let d = new Date(`${fromDate}T12:00`); ymd(d) <= toDate && ymd(d) <= limit; d.setDate(d.getDate() + 1)) {
+    const day = ymd(d); const slots = [];
+    for (const [ws, we] of parseWindows(cfg.hours[d.getDay()])) {
+      for (let m = ws; m + cfg.slot_minutes <= we; m += cfg.slot_minutes) {
+        const s = lms(`${day}T${fromMin(m)}`); const e = s + cfg.slot_minutes * 60e3;
+        if (s < earliest) continue;
+        if (busy.some(([bs, be]) => bs < e && s < be)) continue;
+        slots.push(fromMin(m));
+      }
+    }
+    if (slots.length) out[day] = slots;
+  }
+  return out;
+}
+// endereço público -> clínica (só com o agendamento ligado e a clínica ativa)
+async function bookingClinic(slug) {
+  if (!/^[a-z0-9-]{3,60}$/.test(String(slug))) throw new HttpError(404, 'Página de agendamento não encontrada');
+  const link = (await sql.unsafe('SELECT clinic_id FROM saas.booking_links WHERE slug=$1', [slug]))[0];
+  const clinic = link ? await getClinic(link.clinic_id) : null;
+  if (!clinic) throw new HttpError(404, 'Página de agendamento não encontrada');
+  if (clinicAccess(clinic).mode !== 'full') throw new HttpError(404, 'O agendamento online desta clínica não está disponível no momento.');
+  return clinic;
+}
+const bookingUrl = (slug) => `${APP_URL}/agendar/${slug}`;
+const fmtDay = (s) => s.slice(0, 10).split('-').reverse().join('/');
+async function bookingMail(key, to, clinic, vars, url = null) {
+  if (!to) return;
+  try { await notify.sendTemplate(key, { to, clinicId: clinic.id, url, vars: { clinica: clinic.name, ...vars } }); }
+  catch (e) { console.error(`Agendamento online: e-mail "${key}" não enviado`, e.message); }
+}
+
+// ---------- Rotas públicas (sem login) ----------
+route('GET', '/api/public/booking/:slug', async (ctx) => {
+  const clinic = await bookingClinic(ctx.params.slug);
+  return withClinic(clinic, async () => {
+    const cfg = await bookingSettings();
+    if (!cfg.enabled) throw new HttpError(404, 'O agendamento online desta clínica não está disponível no momento.');
+    const s = await getSettings();
+    return { clinic: s.clinic_name || clinic.name, address: s.address || null, phone: s.phone || null, intro: cfg.intro || null, slot_minutes: cfg.slot_minutes,
+      mode: cfg.mode, professionals: (await bookingProfessionals(cfg)).map((u) => ({ id: u.id, name: u.name })), today: nowParts().date };
+  });
+}, { public: true });
+route('GET', '/api/public/booking/:slug/slots', async (ctx) => {
+  const clinic = await bookingClinic(ctx.params.slug);
+  return withClinic(clinic, async () => {
+    const cfg = await bookingSettings();
+    if (!cfg.enabled) throw new HttpError(404, 'O agendamento online desta clínica não está disponível no momento.');
+    const prof = (await bookingProfessionals(cfg)).find((u) => u.id === Number(ctx.query.get('professional_id')));
+    if (!prof) throw new HttpError(400, 'Escolha um profissional');
+    const n = nowParts().date; const end = new Date(`${n}T12:00`); end.setDate(end.getDate() + cfg.days_ahead);
+    return { days: await freeSlots(cfg, prof.id, n, ymd(end)) };
+  });
+}, { public: true });
+route('POST', '/api/public/booking/:slug', async (ctx) => {
+  const b = ctx.body;
+  if (b.website) return { ok: true, status: 'pendente' }; // campo invisível: robôs preenchem, pessoas não
+  const ipKey = `booking|${ctx.ip}`;
+  await checkRate(ipKey);
+  const clinic = await bookingClinic(ctx.params.slug);
+  const name = reqStr(b.name, 'Nome', 120);
+  const phone = reqStr(b.phone, 'Telefone / WhatsApp', 30);
+  if (String(phone).replace(/\D/g, '').length < 10) throw new HttpError(400, 'Informe o telefone com DDD');
+  const email = str(b.email, 160)?.toLowerCase() || null;
+  if (email && !EMAIL_RE.test(email)) throw new HttpError(400, 'E-mail inválido');
+  if (!b.consent) throw new HttpError(400, 'Para agendar, é preciso concordar com o uso dos seus dados para o atendimento');
+  const start = String(b.start || '');
+  if (!DT_RE.test(start)) throw new HttpError(400, 'Escolha um horário');
+  await failRate(ipKey, 5, 60); // no máximo 5 pedidos por hora por conexão
+  const out = await withClinic(clinic, async () => {
+    const cfg = await bookingSettings();
+    if (!cfg.enabled) throw new HttpError(404, 'O agendamento online desta clínica não está disponível no momento.');
+    const prof = (await bookingProfessionals(cfg)).find((u) => u.id === Number(b.professional_id));
+    if (!prof) throw new HttpError(400, 'Escolha um profissional');
+    // trava por profissional: dois pedidos ao mesmo tempo não pegam o mesmo horário
+    await q.get('SELECT pg_advisory_xact_lock(hashtext(?))', `booking:${clinic.id}:${prof.id}`);
+    const day = start.slice(0, 10);
+    const free = (await freeSlots(cfg, prof.id, day, day))[day] || [];
+    if (!free.includes(start.slice(11))) throw new HttpError(409, 'Este horário acabou de ser ocupado. Escolha outro, por favor.');
+    const notes = str(b.notes, 500);
+    const r = await q.run(`INSERT INTO booking_requests(professional_id, start, duration, name, phone, email, notes, consent_at, ip) VALUES (?,?,?,?,?,?,?,${NOW_SQL},?)`,
+      prof.id, start, cfg.slot_minutes, name, phone, email, notes, ctx.ip);
+    const reqId = Number(r.lastInsertRowid);
+    ctx.user = null;
+    if (cfg.mode === 'automatico') {
+      const apptId = await acceptBooking(ctx, reqId, null, { auto: true });
+      await audit(ctx, 'agendou_online', 'appointment', apptId, null, { horario: start });
+      return { status: 'aceito', cfg, prof, reqId };
+    }
+    await audit(ctx, 'pedido_agendamento_online', 'booking_request', reqId, null, { horario: start });
+    return { status: 'pendente', cfg, prof, reqId };
+  });
+  const vars = { nome: name, data: fmtDay(start), hora: start.slice(11), profissional: out.prof.name };
+  if (out.status === 'pendente') {
+    await bookingMail('agendamento_recebido', email, clinic, vars);
+    // avisa os administradores da clínica e o profissional escolhido
+    const staff = await withClinic(clinic, () => q.all("SELECT name, email FROM users WHERE active=1 AND (role='admin' OR id=?)", out.prof.id));
+    for (const s of staff) await bookingMail('agendamento_novo_pedido', s.email, clinic, { ...vars, nome: s.name, paciente: name, telefone: phone }, `${APP_URL}/#/agenda`);
+  }
+  return { ok: true, status: out.status };
+}, { public: true });
+
+// aceita um pedido: vincula/cria o paciente e cria o atendimento
+async function acceptBooking(ctx, reqId, patientId, { auto = false } = {}) {
+  const r = await q.get('SELECT * FROM booking_requests WHERE id=?', reqId);
+  if (!r) throw new HttpError(404, 'Pedido não encontrado');
+  if (r.status !== 'pendente') throw new HttpError(400, 'Este pedido já foi respondido.');
+  let pid = patientId ? (await q.get('SELECT id FROM patients WHERE id=?', patientId))?.id : null;
+  if (patientId && !pid) throw new HttpError(404, 'Paciente não encontrado');
+  if (!pid) {
+    const digits = String(r.phone || '').replace(/\D/g, '');
+    const match = (r.email ? await q.get('SELECT id FROM patients WHERE lower(email)=?', r.email) : null)
+      || (digits.length >= 10 ? await q.get("SELECT id FROM patients WHERE regexp_replace(coalesce(phone,''), '\\D', '', 'g') = ?", digits) : null);
+    pid = match?.id || Number((await q.run('INSERT INTO patients(name, phone, email, professional_id, notes) VALUES (?,?,?,?,?)',
+      r.name, r.phone, r.email, r.professional_id, 'Cadastro criado pelo agendamento online')).lastInsertRowid);
+  }
+  if (!auto) {
+    const conflict = await overlapCheck({ professional_id: r.professional_id, start: r.start, duration: r.duration, status: 'agendado' });
+    if (conflict) throw new HttpError(409, conflict);
+  }
+  const a = await q.run("INSERT INTO appointments(patient_id, professional_id, start, duration, kind, status, notes) VALUES (?,?,?,?,'sessao','agendado',?)",
+    pid, r.professional_id, r.start, r.duration, `Agendado online${r.notes ? ` — ${r.notes}` : ''}`);
+  const apptId = Number(a.lastInsertRowid);
+  await q.run(`UPDATE booking_requests SET status='aceito', patient_id=?, appointment_id=?, decided_by=?, decided_at=${NOW_SQL} WHERE id=?`, pid, apptId, ctx.user?.id ?? null, r.id);
+  const prof = await q.get('SELECT name FROM users WHERE id=?', r.professional_id);
+  const s = await getSettings();
+  const clinic = als.getStore().clinic;
+  await bookingMail('agendamento_confirmado', r.email, clinic, { nome: r.name, data: fmtDay(r.start), hora: r.start.slice(11), profissional: prof?.name || '',
+    endereco: s.address || '', telefone_clinica: s.phone || '' });
+  return apptId;
+}
+
+// ---------- Rotas da clínica ----------
+route('GET', '/api/booking/settings', async (ctx) => {
+  requireRole(ctx.user, ['admin']);
+  const cfg = await bookingSettings();
+  let link = (await q.get('SELECT slug FROM saas.booking_links WHERE clinic_id=?', ctx.clinic.id))?.slug;
+  if (!link) {
+    const base = String(ctx.clinic.name).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'clinica';
+    link = `${base}-${crypto.randomBytes(2).toString('hex')}`;
+    await q.run('INSERT INTO saas.booking_links(slug, clinic_id) VALUES (?,?) ON CONFLICT (clinic_id) DO NOTHING', link, ctx.clinic.id);
+    link = (await q.get('SELECT slug FROM saas.booking_links WHERE clinic_id=?', ctx.clinic.id)).slug;
+  }
+  const all = await q.all("SELECT id, name FROM users WHERE active=1 AND role IN ('admin','fisio') ORDER BY name");
+  return { ...cfg, slug: link, url: bookingUrl(link), all_professionals: all };
+});
+route('PUT', '/api/booking/settings', async (ctx) => {
+  requireRole(ctx.user, ['admin']);
+  const b = ctx.body; const cur = await bookingSettings();
+  const int = (v, lo, hi, label) => { const n = Number(v); if (!Number.isInteger(n) || n < lo || n > hi) throw new HttpError(400, `${label}: use um número de ${lo} a ${hi}`); return n; };
+  const hours = {};
+  for (let d = 0; d <= 6; d++) { const t = String(b.hours?.[d] ?? cur.hours[d] ?? '').trim(); parseWindows(t); hours[d] = t; }
+  const valid = (await q.all("SELECT id FROM users WHERE active=1 AND role IN ('admin','fisio')")).map((u) => u.id);
+  const cfg = {
+    enabled: !!b.enabled, mode: oneOf(b.mode, ['confirmar', 'automatico'], 'Modo', 'confirmar'),
+    slot_minutes: int(b.slot_minutes ?? cur.slot_minutes, 10, 240, 'Duração do horário (min)'),
+    min_hours: int(b.min_hours ?? cur.min_hours, 0, 720, 'Antecedência mínima (horas)'),
+    days_ahead: int(b.days_ahead ?? cur.days_ahead, 1, 120, 'Dias à frente'),
+    professionals: (Array.isArray(b.professionals) ? b.professionals.map(Number) : cur.professionals).filter((id) => valid.includes(id)),
+    intro: str(b.intro, 600) || '', hours,
+  };
+  if (cfg.enabled && !Object.values(hours).some((t) => t)) throw new HttpError(400, 'Defina os horários de pelo menos um dia da semana');
+  await setSetting('booking', JSON.stringify(cfg));
+  if (b.slug !== undefined) {
+    const slug = String(b.slug).trim().toLowerCase();
+    if (!/^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$/.test(slug)) throw new HttpError(400, 'Endereço inválido: use de 3 a 60 letras minúsculas, números e hífen');
+    const taken = await q.get('SELECT clinic_id FROM saas.booking_links WHERE slug=?', slug);
+    if (taken && taken.clinic_id !== ctx.clinic.id) throw new HttpError(400, 'Este endereço já está em uso por outra clínica');
+    await q.run('INSERT INTO saas.booking_links(slug, clinic_id) VALUES (?,?) ON CONFLICT (clinic_id) DO UPDATE SET slug=excluded.slug', slug, ctx.clinic.id);
+  }
+  await audit(ctx, 'alterou_agendamento_online', 'settings', null, null, { ligado: cfg.enabled, modo: cfg.mode });
+  return { ok: true };
+});
+route('GET', '/api/booking/requests', async (ctx) => {
+  const st = oneOf(ctx.query.get('status') || 'pendente', ['pendente', 'aceito', 'recusado', 'todos'], 'Situação', 'pendente');
+  return q.all(`SELECT r.*, u.name professional_name FROM booking_requests r LEFT JOIN users u ON u.id=r.professional_id
+    ${st === 'todos' ? '' : 'WHERE r.status=?'} ORDER BY r.start LIMIT 300`, ...(st === 'todos' ? [] : [st]));
+});
+route('POST', '/api/booking/requests/:id/accept', async (ctx) => {
+  const id = idParam(ctx.params.id);
+  const apptId = await tx(() => acceptBooking(ctx, id, ctx.body.patient_id ? Number(ctx.body.patient_id) : null));
+  await audit(ctx, 'aceitou_agendamento_online', 'appointment', apptId);
+  return { ok: true, appointment_id: apptId };
+});
+route('POST', '/api/booking/requests/:id/decline', async (ctx) => {
+  const r = await q.get('SELECT * FROM booking_requests WHERE id=?', idParam(ctx.params.id));
+  if (!r) throw new HttpError(404, 'Pedido não encontrado');
+  if (r.status !== 'pendente') throw new HttpError(400, 'Este pedido já foi respondido.');
+  const reason = str(ctx.body.reason, 300);
+  await q.run(`UPDATE booking_requests SET status='recusado', decided_by=?, decided_at=${NOW_SQL} WHERE id=?`, ctx.user.id, r.id);
+  await audit(ctx, 'recusou_agendamento_online', 'booking_request', r.id, null, { motivo: reason });
+  const link = (await q.get('SELECT slug FROM saas.booking_links WHERE clinic_id=?', ctx.clinic.id))?.slug;
+  await bookingMail('agendamento_recusado', r.email, ctx.clinic, { nome: r.name, data: fmtDay(r.start), hora: r.start.slice(11),
+    motivo: reason || 'O horário não está mais disponível.' }, link ? bookingUrl(link) : APP_URL);
+  return { ok: true };
+});
+
 // ====================== Assinatura (Stripe) ======================
 route('GET', '/api/billing', async (ctx) => clinicInfo(ctx.clinic), { always: true });
 route('POST', '/api/billing/checkout', async (ctx) => {

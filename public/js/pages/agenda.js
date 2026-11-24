@@ -152,6 +152,9 @@ export async function agendaPage(view) {
   const profSel = state.user.role !== 'fisio' && state.professionals.length > 1 ? h('select', { class: 'input', style: { width: 'auto' }, onchange: (e) => { prof = e.target.value; load(); } },
     h('option', { value: '' }, 'Todos os profissionais'), state.professionals.map((p) => h('option', { value: p.id, selected: String(p.id) === String(prof) }, p.name))) : null;
 
+  const reqBox = h('div');
+  const loadRequests = async () => { const c = await bookingRequestsCard(() => { loadRequests(); load(); }); reqBox.replaceChildren(...(c ? [c] : [])); };
+  loadRequests();
   view.append(
     h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Agenda'), h('p', null, 'Clique em um horário livre para agendar. Clique em um atendimento para alterar a situação.')),
       h('button', { class: 'btn primary', onclick: () => appointmentModal({ date: ymd(cur) }, refresh) }, icon('plus', 16), 'Novo agendamento')),
@@ -163,6 +166,7 @@ export async function agendaPage(view) {
         title),
       h('div', { class: 'row' }, profSel,
         h('div', { class: 'btn-group' }, [['day', 'Dia'], ['week', 'Semana'], ['month', 'Mês']].map(([k, l]) => (modeBtns[k] = h('button', { onclick: () => { mode = k; load(); } }, l)))))),
+    reqBox,
     box,
     h('div', { class: 'legend', style: { marginTop: '10px' } }, [['#3b6ef0', 'Agendado'], ['#0f9488', 'Confirmado'], ['#22a04b', 'Realizado'], ['#dc2626', 'Falta'], ['#9aa5ae', 'Cancelado']].map(([c, l]) => h('span', null, h('i', { style: { background: c } }), l))));
   await load();
@@ -182,4 +186,36 @@ export async function patientAppointments(body, p) {
         h('td', null, `${WEEKDAYS[new Date(a.start).getDay()]} ${fmtDate(a.start)}`), h('td', null, fmtTime(a.start)), h('td', null, LABELS.kind[a.kind]),
         h('td', null, a.professional_name || '—'), h('td', null, badge(a.status, 'appt')), h('td', null, a.price ? money(a.price) : '—'))))))
       : empty('Nenhum atendimento agendado para este paciente.')));
+}
+
+// Pedidos feitos pela página de agendamento online, esperando a clínica responder
+async function bookingRequestsCard(onChange) {
+  let list = [];
+  try { list = await get('/booking/requests?status=pendente'); } catch { return null; }
+  if (!list.length) return null;
+  const fmt = (s) => `${s.slice(8, 10)}/${s.slice(5, 7)} às ${s.slice(11, 16)}`;
+  const card = h('div', { class: 'card', style: { marginBottom: '14px', borderColor: 'var(--amber)' } },
+    h('div', { class: 'card-head' }, h('h2', null, icon('calendar', 16), ` Pedidos de agendamento online (${list.length})`), h('small', null, 'O horário fica reservado até você responder.')),
+    h('div', { class: 'list' }, list.map((r) => h('div', { class: 'list-item' },
+      h('div', { class: 'grow' }, h('b', null, `${fmt(r.start)} · ${r.name}`),
+        h('div', { class: 'muted', style: { fontSize: '12.5px' } }, [r.professional_name, r.phone, r.email].filter(Boolean).join(' · ')),
+        r.notes ? h('div', { style: { fontSize: '12.5px', marginTop: '2px' } }, `"${r.notes}"`) : null),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn sm primary', onclick: async (e) => {
+          const b = e.currentTarget; b.disabled = true;
+          try { await post(`/booking/requests/${r.id}/accept`); toast('Horário confirmado e paciente avisado'); onChange(); }
+          catch (err) {
+            b.disabled = false;
+            if (err.status === 409 && await confirmDialog(`${err.message}\n\nRecusar este pedido?`, { okLabel: 'Recusar pedido', danger: true })) {
+              try { await post(`/booking/requests/${r.id}/decline`, { reason: 'O horário não está mais disponível.' }); onChange(); } catch (e2) { toast(e2.message, 'error'); }
+            } else if (err.status !== 409) toast(err.message, 'error');
+          }
+        } }, icon('check', 14), 'Aceitar'),
+        h('button', { class: 'btn sm ghost', onclick: async () => {
+          const reason = await confirmDialog(`Recusar o pedido de ${r.name} (${fmt(r.start)})? O paciente recebe um e-mail com o link para escolher outro horário.`,
+            { okLabel: 'Recusar', danger: true, input: { label: 'Motivo (opcional, vai no e-mail)', placeholder: 'Ex.: neste dia a clínica estará fechada' } });
+          if (reason === null) return;
+          try { await post(`/booking/requests/${r.id}/decline`, { reason }); toast('Pedido recusado'); onChange(); } catch (e) { toast(e.message, 'error'); }
+        } }, 'Recusar'))))));
+  return card;
 }

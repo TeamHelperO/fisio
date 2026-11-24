@@ -54,6 +54,38 @@ const DEFAULTS = {
     body: 'Olá, {{nome}}!\n\nA senha da sua conta de administrador da plataforma FisioGestão foi alterada agora. Todas as sessões abertas foram encerradas.\n\nSe não foi você, avise imediatamente os outros administradores.',
     button: 'Entrar no painel',
   },
+  agendamento_novo_pedido: {
+    group: 'Agendamento online', optional: true, name: 'Novo pedido de agendamento (para a clínica)',
+    when: 'Enviado aos administradores e ao profissional quando um paciente pede um horário pela página de agendamento.',
+    vars: { nome: 'Nome de quem recebe', clinica: 'Nome da clínica', paciente: 'Nome do paciente', telefone: 'Telefone do paciente', data: 'Data', hora: 'Hora', profissional: 'Profissional' }, link: true,
+    subject: 'Novo pedido de agendamento: {{paciente}} em {{data}} às {{hora}}',
+    body: 'Olá, {{nome}}!\n\n{{paciente}} pediu um horário pela página de agendamento online:\n{{data}} às {{hora}} com {{profissional}}.\nTelefone: {{telefone}}\n\nAbra a Agenda para aceitar ou recusar o pedido.',
+    button: 'Ver pedidos na agenda',
+  },
+  agendamento_recebido: {
+    group: 'Agendamento online', optional: true, name: 'Pedido recebido (para o paciente)',
+    when: 'Enviado ao paciente logo depois do pedido, quando a clínica confirma cada horário.',
+    vars: { nome: 'Nome do paciente', clinica: 'Nome da clínica', data: 'Data', hora: 'Hora', profissional: 'Profissional' }, link: false,
+    subject: 'Recebemos seu pedido de horário — {{clinica}}',
+    body: 'Olá, {{nome}}!\n\nRecebemos seu pedido de atendimento na {{clinica}} para {{data}} às {{hora}} com {{profissional}}.\n\nA clínica vai confirmar o horário e você receberá outro e-mail.',
+    button: '',
+  },
+  agendamento_confirmado: {
+    group: 'Agendamento online', optional: true, name: 'Horário confirmado (para o paciente)',
+    when: 'Enviado ao paciente quando o horário é confirmado (na hora, ou quando a clínica aceita o pedido).',
+    vars: { nome: 'Nome do paciente', clinica: 'Nome da clínica', data: 'Data', hora: 'Hora', profissional: 'Profissional', endereco: 'Endereço da clínica', telefone_clinica: 'Telefone da clínica' }, link: false,
+    subject: 'Horário confirmado: {{data}} às {{hora}} — {{clinica}}',
+    body: 'Olá, {{nome}}!\n\nSeu atendimento na {{clinica}} está confirmado para {{data}} às {{hora}} com {{profissional}}.\n\nEndereço: {{endereco}}\nTelefone: {{telefone_clinica}}\n\nSe não puder comparecer, avise a clínica com antecedência.',
+    button: '',
+  },
+  agendamento_recusado: {
+    group: 'Agendamento online', optional: true, name: 'Pedido não confirmado (para o paciente)',
+    when: 'Enviado ao paciente quando a clínica recusa o pedido.',
+    vars: { nome: 'Nome do paciente', clinica: 'Nome da clínica', data: 'Data', hora: 'Hora', motivo: 'Motivo informado pela clínica' }, link: true,
+    subject: 'Não foi possível confirmar seu horário — {{clinica}}',
+    body: 'Olá, {{nome}}!\n\nInfelizmente a {{clinica}} não pôde confirmar o horário de {{data}} às {{hora}}.\nMotivo: {{motivo}}\n\nVocê pode escolher outro horário pelo link abaixo.',
+    button: 'Escolher outro horário',
+  },
   boas_vindas: {
     group: 'Ciclo do cliente', optional: true, name: 'Boas-vindas com primeiros passos',
     when: 'Enviado uma vez, cerca de 1 hora depois do cadastro da clínica.',
@@ -113,7 +145,9 @@ const DEFAULTS = {
 };
 // valores de exemplo para a prévia e para o envio de teste de um modelo
 const SAMPLE = { nome: 'Ana Souza', clinica: 'Clínica Movimento', validade: '48 horas', convidado_por: 'Dra. Helena Prado', servico: 'SMTP', admin: 'Administrador',
-  dias: '3', data_fim: '27/11/2026', proxima_cobranca: '24/12/2026', acesso_ate: '24/12/2026' };
+  dias: '3', data_fim: '27/11/2026', proxima_cobranca: '24/12/2026', acesso_ate: '24/12/2026',
+  paciente: 'João Pereira', telefone: '(11) 98888-7777', data: '02/12/2026', hora: '14:00', profissional: 'Dra. Helena Prado',
+  endereco: 'Rua das Flores, 100 — Centro', telefone_clinica: '(11) 3333-4444', motivo: 'O horário não está mais disponível.' };
 
 const VAR_RE = /\{\{\s*([a-z_]+)\s*\}\}/g;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

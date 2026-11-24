@@ -22,7 +22,7 @@ self.addEventListener('activate', (event) => {
 });
 
 // Fora do escopo do app: API (dados), área administrativa e o próprio service worker
-const bypass = (url) => url.pathname.startsWith('/api/') || url.pathname === '/admin' || url.pathname.startsWith('/admin.') || url.pathname === '/js/admin.js' || url.pathname === '/sw.js';
+const bypass = (url) => url.pathname.startsWith('/api/') || url.pathname === '/admin' || url.pathname.startsWith('/admin.') || url.pathname.startsWith('/agendar') || url.pathname === '/js/admin.js' || url.pathname === '/sw.js';
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;

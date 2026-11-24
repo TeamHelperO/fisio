@@ -17,6 +17,10 @@
       "destination": "/admin.html"
     },
     {
+      "source": "/agendar/:slug",
+      "destination": "/agendar.html"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/index"
     }
