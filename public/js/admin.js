@@ -1,7 +1,7 @@
 // Área administrativa da PLATAFORMA (dono do SaaS).
 // Mostra contas, assinaturas, métricas e contatos — nunca dados clínicos ou de pacientes.
 import { h, icon, toast, $, loading, modal, buildForm, empty, money, fmtDate, fmtDT, confirmDialog, csvCell, downloadFile } from './ui.js';
-import { get, post, put } from './api.js';
+import { get, post, put, del } from './api.js';
 import { barChart } from './charts.js';
 
 const root = $('#root');
@@ -67,7 +67,7 @@ function setupScreen(enabled) {
 }
 
 // ---------------- Layout ----------------
-const NAV = [['dashboard', 'Dashboard', 'dashboard'], ['clinicas', 'Clínicas', 'users'], ['financeiro', 'Financeiro', 'wallet'], ['usuarios', 'Usuários e marketing', 'phone'], ['apis', 'APIs e integrações', 'settings'], ['admins', 'Administradores', 'shield'], ['auditoria', 'Registro de ações', 'history']];
+const NAV = [['dashboard', 'Dashboard', 'dashboard'], ['clinicas', 'Clínicas', 'users'], ['financeiro', 'Financeiro', 'wallet'], ['usuarios', 'Usuários e marketing', 'phone'], ['apis', 'APIs e integrações', 'settings'], ['emails', 'E-mails', 'file'], ['admins', 'Administradores', 'shield'], ['auditoria', 'Registro de ações', 'history']];
 function buildShell() {
   const nav = h('nav', { class: 'nav' }, NAV.map(([p, l, ic]) => h('a', { href: `#/${p}`, 'data-path': p, onclick: () => app.classList.remove('menu-open') }, icon(ic), h('span', { class: 'grow' }, l))));
   const content = h('main', { class: 'content', tabindex: '-1' });
@@ -86,7 +86,7 @@ function buildShell() {
   shell = { nav, content };
 }
 
-const PAGES = { dashboard, clinicas, financeiro, usuarios, apis, admins, auditoria };
+const PAGES = { dashboard, clinicas, financeiro, usuarios, apis, emails, admins, auditoria };
 let seq = 0;
 async function router() {
   if (!me) return;
@@ -248,6 +248,106 @@ async function usuarios(view) {
   render();
 }
 
+// ---------------- Envio de e-mail: situação, teste de conexão e envio de teste ----------------
+function connectionCard(mail, withHelp) {
+  const to = h('input', { class: 'input', type: 'email', value: me?.email || '', style: { maxWidth: '260px' }, 'aria-label': 'Enviar teste para' });
+  const verifyBtn = h('button', { class: 'btn', disabled: !mail.provider }, icon('shield', 15), 'Testar conexão');
+  const testBtn = h('button', { class: 'btn', disabled: !mail.provider }, icon('check', 15), 'Enviar e-mail de teste');
+  const result = h('div');
+  const busy = (on, label) => { verifyBtn.disabled = testBtn.disabled = on; if (on) result.replaceChildren(h('small', { class: 'muted' }, label)); };
+  verifyBtn.onclick = async () => {
+    busy(true, 'Conectando ao servidor…');
+    try {
+      const r = await post(A('/email/verify'));
+      result.replaceChildren(h('div', { class: 'notice info' }, icon('check'), h('div', null,
+        h('b', null, `Conexão OK (${(r.ms / 1000).toFixed(1).replace('.', ',')} s) — nenhum e-mail foi enviado.`),
+        h('ul', { style: { margin: '6px 0 0', paddingLeft: '18px' } }, r.steps.map((x) => h('li', null, x))),
+        r.warning ? h('div', { style: { marginTop: '6px' } }, h('b', null, 'Atenção: '), r.warning) : null)));
+    } catch (e) { result.replaceChildren(h('div', { class: 'notice' }, icon('alert'), h('span', null, h('b', null, 'Falha na conexão. '), e.message))); }
+    busy(false);
+  };
+  testBtn.onclick = async () => {
+    busy(true, 'Enviando…');
+    try {
+      const r = await post(A('/email/test'), { to: to.value });
+      result.replaceChildren(h('div', { class: 'notice info' }, icon('check'), h('span', null, `Enviado via ${r.provider === 'smtp' ? 'SMTP' : 'Resend'}. Confira a caixa de entrada (e o spam) de ${to.value}.`, r.response ? h('small', { style: { display: 'block' } }, `Resposta do servidor: ${r.response}`) : null)));
+    } catch (e) { result.replaceChildren(h('div', { class: 'notice' }, icon('alert'), h('span', null, e.message))); }
+    busy(false);
+  };
+  return card('Envio de e-mails', h('div', { class: 'card-body stack' },
+    h('p', { style: { margin: 0 } }, h('b', null, 'Situação: '), mail.provider
+      ? [pill('green', mail.provider === 'smtp' ? 'SMTP' : 'Resend'), ' ', mail.detail || '', mail.from ? h('div', null, h('small', { class: 'muted' }, `Remetente: ${mail.from}`)) : h('div', null, h('small', { class: 'muted' }, 'Falta configurar o remetente (EMAIL_FROM).'))]
+      : [pill('gray', 'não configurado'), ' Preencha o servidor SMTP em ', h('a', { href: '#/apis' }, 'APIs e integrações'), ' (ou a chave do Resend).']),
+    withHelp ? h('small', { class: 'help' }, 'Gmail/Google Workspace: smtp.gmail.com, porta 587, STARTTLS, com uma "senha de app". Outlook/Microsoft 365: smtp.office365.com, 587, STARTTLS. Hostinger/Locaweb/KingHost: use os dados do seu provedor.') : null,
+    h('small', { class: 'help' }, '"Testar conexão" confere servidor, porta, criptografia e login sem enviar nada. "Enviar e-mail de teste" manda uma mensagem de verdade.'),
+    h('div', { class: 'row' }, verifyBtn, to, testBtn), result));
+}
+
+// ---------------- E-mails: modelos ----------------
+async function emails(view) {
+  const [mail, list] = await Promise.all([get(A('/email/status')), get(A('/email/templates'))]);
+  view.append(head('E-mails', 'Conexão com o servidor de e-mail e os textos dos e-mails automáticos'), connectionCard(mail, false),
+    card('Modelos de e-mail', table(['Modelo', 'Quando é enviado', 'Assunto', 'Texto', ''], list.map((t) => h('tr', null,
+      h('td', null, h('b', null, t.name)), h('td', null, h('small', null, t.when)), h('td', null, t.subject),
+      h('td', { class: 'nowrap' }, t.customized ? [pill('blue', 'Personalizado'), h('div', null, h('small', { class: 'muted' }, `${fmtTs(t.updated_at)} · ${t.updated_by || ''}`))] : pill('gray', 'Padrão')),
+      h('td', { class: 'actions' }, h('button', { class: 'btn sm', onclick: () => editTemplate(t) }, icon('edit', 14), 'Editar')))))),
+    h('p', null, h('small', { class: 'muted' }, 'Os modelos valem para todas as clínicas. Use as variáveis entre chaves duplas, como {{nome}}; elas são trocadas pelos dados de cada pessoa no envio.')));
+}
+
+function editTemplate(t) {
+  const subject = h('input', { class: 'input', value: t.subject, maxLength: 200 });
+  const body = h('textarea', { class: 'input', rows: 11, style: { fontFamily: 'inherit' } }); body.value = t.body;
+  const button = h('input', { class: 'input', value: t.button || '', maxLength: 60 });
+  const prev = h('div', { class: 'mail-preview' });
+  const err = h('div');
+  let last = null;
+  const values = () => ({ subject: subject.value, body: body.value, button: button.value });
+  const insertVar = (v) => {
+    const el = document.activeElement === subject ? subject : body;
+    const tag = `{{${v}}}`; const a = el.selectionStart ?? el.value.length; const b = el.selectionEnd ?? a;
+    el.value = el.value.slice(0, a) + tag + el.value.slice(b); el.focus(); el.selectionStart = el.selectionEnd = a + tag.length; refreshPreview();
+  };
+  const refreshPreview = debounceLocal(async () => {
+    try {
+      const r = await post(A(`/email/templates/${t.key}/preview`), values()); last = r; err.replaceChildren();
+      prev.replaceChildren(
+        h('div', { class: 'mail-subject' }, h('small', null, 'Assunto'), h('b', null, r.subject)),
+        h('div', { class: 'mail-card' }, h('div', { class: 'mail-brand' }, 'FisioGestão'),
+          r.paragraphs.map((p) => h('p', null, ...p.split('\n').flatMap((line, i) => (i ? [h('br'), line] : [line])))),
+          r.button ? h('span', { class: 'mail-btn' }, r.button) : null));
+    } catch (e) { err.replaceChildren(h('div', { class: 'notice' }, icon('alert'), h('span', null, e.message))); }
+  }, 350);
+  [subject, body, button].forEach((el) => el.addEventListener('input', refreshPreview));
+  const to = h('input', { class: 'input', type: 'email', value: me?.email || '', style: { maxWidth: '230px' }, 'aria-label': 'Enviar teste para' });
+  const m = modal({ title: `Modelo: ${t.name}`, wide: true, body: h('div', { class: 'grid g2 tpl-edit' },
+    h('div', { class: 'stack' },
+      h('small', { class: 'help' }, t.when),
+      h('label', { class: 'field' }, h('span', null, 'Assunto'), subject),
+      h('label', { class: 'field' }, h('span', null, 'Texto (deixe uma linha em branco entre os parágrafos)'), body),
+      t.link ? h('label', { class: 'field' }, h('span', null, 'Texto do botão (o link é colocado automaticamente)'), button) : null,
+      h('div', null, h('small', { class: 'muted' }, 'Variáveis — clique para inserir:'),
+        h('div', { class: 'row', style: { gap: '6px', marginTop: '6px' } }, Object.entries(t.vars).map(([v, label]) =>
+          h('button', { type: 'button', class: 'btn sm ghost', title: label, onmousedown: (e) => e.preventDefault(), onclick: () => insertVar(v) }, `{{${v}}}`)))),
+      err),
+    h('div', { class: 'stack' }, h('small', { class: 'muted' }, 'Prévia (com dados de exemplo)'), prev,
+      h('div', { class: 'row' }, to, h('button', { class: 'btn sm', onclick: async (e) => {
+        const b = e.currentTarget; b.disabled = true;
+        try { await post(A(`/email/templates/${t.key}/test`), { ...values(), to: to.value }); toast(`Teste enviado para ${to.value}`); } catch (er) { toast(er.message, 'error'); }
+        b.disabled = false;
+      } }, 'Enviar teste deste modelo')))),
+  actions: [
+    t.customized ? h('button', { class: 'btn ghost', style: { marginRight: 'auto' }, onclick: async () => {
+      if (!(await confirmDialog('Voltar este modelo ao texto padrão do sistema?', { okLabel: 'Restaurar padrão' }))) return;
+      try { await del(A(`/email/templates/${t.key}`)); toast('Modelo restaurado'); m.close(); refresh(); } catch (e) { toast(e.message, 'error'); }
+    } }, 'Restaurar padrão') : null,
+    h('button', { class: 'btn ghost', onclick: () => m.close() }, 'Cancelar'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      try { await put(A(`/email/templates/${t.key}`), values()); toast('Modelo salvo'); m.close(); refresh(); } catch (e) { toast(e.message, 'error'); }
+    } }, icon('check', 15), 'Salvar')] });
+  refreshPreview();
+}
+function debounceLocal(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
 // ---------------- APIs e integrações ----------------
 async function apis(view) {
   const [fields, mail] = await Promise.all([get(A('/config')), get(A('/email/status'))]);
@@ -264,23 +364,7 @@ async function apis(view) {
       f.source === 'painel' ? h('button', { class: 'btn ghost', style: { marginRight: 'auto' }, onclick: async () => { try { await put(A('/config'), { key: f.key, value: '' }); toast('Valor removido do painel'); m.close(); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Remover') : null,
       h('button', { class: 'btn primary', onclick: async () => { try { await put(A('/config'), { key: f.key, value: input.value }); toast('Configuração salva'); m.close(); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Salvar')] });
   };
-  const to = h('input', { class: 'input', type: 'email', value: me?.email || '', style: { maxWidth: '280px' }, 'aria-label': 'Enviar teste para' });
-  const testBtn = h('button', { class: 'btn', disabled: !mail.provider }, icon('check', 15), 'Enviar e-mail de teste');
-  const result = h('div');
-  testBtn.onclick = async () => {
-    testBtn.disabled = true; result.replaceChildren(h('small', { class: 'muted' }, 'Enviando…'));
-    try {
-      const r = await post(A('/email/test'), { to: to.value });
-      result.replaceChildren(h('div', { class: 'notice info' }, icon('check'), h('span', null, `Enviado via ${r.provider === 'smtp' ? 'SMTP' : 'Resend'}. Confira a caixa de entrada (e o spam) de ${to.value}.`, r.response ? h('small', { style: { display: 'block' } }, `Resposta do servidor: ${r.response}`) : null)));
-    } catch (e) { result.replaceChildren(h('div', { class: 'notice' }, icon('alert'), h('span', null, e.message))); }
-    testBtn.disabled = false;
-  };
-  const mailCard = card('Envio de e-mails', h('div', { class: 'card-body stack' },
-    h('p', { style: { margin: 0 } }, h('b', null, 'Situação: '), mail.provider
-      ? [pill('green', mail.provider === 'smtp' ? 'SMTP' : 'Resend'), ' ', mail.detail || '', mail.from ? h('div', null, h('small', { class: 'muted' }, `Remetente: ${mail.from}`)) : h('div', null, h('small', { class: 'muted' }, 'Falta configurar o remetente (EMAIL_FROM).'))]
-      : [pill('gray', 'não configurado'), ' Preencha o servidor SMTP abaixo (ou a chave do Resend).']),
-    h('small', { class: 'help' }, 'Gmail/Google Workspace: smtp.gmail.com, porta 587, STARTTLS, com uma "senha de app". Outlook/Microsoft 365: smtp.office365.com, 587, STARTTLS. Hostinger/Locaweb/KingHost: use os dados do seu provedor.'),
-    h('div', { class: 'row' }, to, testBtn), result));
+  const mailCard = connectionCard(mail, true);
   view.append(head('APIs e integrações', 'Chaves e parâmetros usados pela plataforma'), mailCard,
     h('div', { class: 'notice info', style: { marginBottom: '16px' } }, icon('shield'), h('div', null, 'As chaves ficam cifradas no banco de dados (com uma subchave da MASTER_KEY) e não aparecem na tela nem no registro de ações. Webhooks: Stripe → ', h('code', null, `${location.origin}/api/stripe/webhook`), ' · Mercado Pago (evento "Planos e assinaturas") → ', h('code', null, `${location.origin}/api/mercadopago/webhook`), '.')),
     h('div', { class: 'stack' }, Object.entries(groups).map(([g, fs]) => card(g, table(['Configuração', 'Valor atual', 'Origem', 'Atualizado', ''], fs.map((f) => h('tr', null,

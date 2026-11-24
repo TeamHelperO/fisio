@@ -368,3 +368,13 @@ textarea.input { resize: vertical; min-height: 64px; }
 .ex-details { margin-top: 10px; }
 .ex-details summary { cursor: pointer; color: var(--primary); font-weight: 600; font-size: 13px; }
 @media (max-width: 900px) { .form-grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* prévia dos modelos de e-mail (admin) */
+.mail-preview { background: #f4f6f8; border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.mail-subject { margin-bottom: 10px; font-size: 13.5px; }
+.mail-subject small { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.mail-card { background: #fff; border: 1px solid #e3e8ec; border-radius: 10px; padding: 16px 18px; font-size: 14px; }
+.mail-card p { margin: 0 0 10px; line-height: 1.5; }
+.mail-brand { font-weight: 700; color: #0f766e; margin-bottom: 10px; }
+.mail-btn { display: inline-block; background: #0f766e; color: #fff; padding: 9px 16px; border-radius: 7px; font-weight: 700; margin-top: 4px; }
+@media (max-width: 900px) { .tpl-edit { grid-template-columns: 1fr; } }

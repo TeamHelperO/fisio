@@ -7,6 +7,7 @@ const { HttpError, route, match, readBody, parseCookies, send, SECURITY_HEADERS 
 const stripe = require('./stripe');
 const mp = require('./mercadopago');
 const mailer = require('./mailer');
+const templates = require('./emailTemplates');
 const config = require('./config');
 
 const ON_VERCEL = !!process.env.VERCEL;
@@ -291,15 +292,6 @@ route('POST', '/api/login', async (ctx) => {
 // Link de uso único, válido por 1 hora, enviado por e-mail (SMTP/Resend do painel /admin).
 // A resposta é sempre a mesma, exista ou não a conta (não revela quais e-mails estão cadastrados).
 const RESET_TTL_MIN = 60;
-const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-function mailLayout(title, paragraphs, button) {
-  const p = paragraphs.map((t) => `<p style="margin:0 0 14px;font-size:15px;line-height:1.5;color:#17232d">${t}</p>`).join('');
-  const b = button ? `<p style="margin:22px 0"><a href="${escHtml(button.url)}" style="background:#0f766e;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:bold;display:inline-block">${escHtml(button.label)}</a></p>` : '';
-  return `<!doctype html><html lang="pt-BR"><body style="margin:0;background:#f4f6f8;font-family:Segoe UI,Arial,sans-serif"><div style="max-width:520px;margin:0 auto;padding:28px 16px">
-<div style="font-weight:bold;font-size:18px;color:#0f766e;margin-bottom:16px">FisioGestão</div>
-<div style="background:#fff;border:1px solid #e3e8ec;border-radius:12px;padding:24px"><h1 style="font-size:19px;margin:0 0 14px;color:#17232d">${escHtml(title)}</h1>${p}${b}</div>
-<p style="font-size:12px;color:#64737f;margin-top:16px">Mensagem automática do FisioGestão. Não responda a este e-mail.</p></div></body></html>`;
-}
 const PASSWORD_RE_SENT = 'Se houver uma conta com este e-mail, enviamos um link para criar uma nova senha. Confira a caixa de entrada e o spam. O link vale por 1 hora.';
 
 route('POST', '/api/password/forgot', async (ctx) => {
@@ -324,12 +316,7 @@ route('POST', '/api/password/forgot', async (ctx) => {
       [sha(token), clinic.id, user.id, email, Date.now() + RESET_TTL_MIN * 60e3, ctx.ip]);
     const url = `${APP_URL}/#/redefinir-senha?t=${token}`;
     try {
-      await mailer.send({
-        to: email, subject: 'Criar nova senha — FisioGestão',
-        text: `Olá, ${user.name}!\n\nRecebemos um pedido para criar uma nova senha da sua conta no FisioGestão (${clinic.name}).\n\nPara continuar, abra o link abaixo (vale por 1 hora e só pode ser usado uma vez):\n${url}\n\nSe não foi você, ignore este e-mail: sua senha atual continua valendo.`,
-        html: mailLayout('Criar nova senha', [`Olá, ${escHtml(user.name)}!`, `Recebemos um pedido para criar uma nova senha da sua conta no FisioGestão (${escHtml(clinic.name)}).`,
-          'O link vale por <b>1 hora</b> e só pode ser usado uma vez. Se não foi você, ignore este e-mail: sua senha atual continua valendo.'], { url, label: 'Criar nova senha' }),
-      });
+      await mailer.send({ to: email, ...(await templates.render('esqueci_senha', { nome: user.name, clinica: clinic.name, validade: `${RESET_TTL_MIN / 60} hora` }, url)) });
       await withClinic(clinic, () => { ctx.user = null; return audit(ctx, 'pediu_nova_senha', 'user', user.id, null, { ip: ctx.ip }); });
     } catch (e) {
       console.error('Esqueci minha senha: falha ao enviar e-mail', e.message);
@@ -381,12 +368,8 @@ route('POST', '/api/password/reset', async (ctx) => {
   // encerra todas as sessões abertas e libera bloqueios de login
   await sql.unsafe('DELETE FROM saas.sessions WHERE clinic_id=$1 AND user_id=$2', [clinic.id, user.id]);
   await sql.unsafe("DELETE FROM saas.login_attempts WHERE key LIKE 'login|%|' || $1", [user.email]);
-  await mailer.send({
-    to: user.email, subject: 'Sua senha foi alterada — FisioGestão',
-    text: `Olá, ${user.name}!\n\nA senha da sua conta no FisioGestão foi alterada agora. Por segurança, todas as sessões abertas foram encerradas.\n\nSe não foi você, fale imediatamente com o administrador da sua clínica.`,
-    html: mailLayout('Sua senha foi alterada', [`Olá, ${escHtml(user.name)}!`, 'A senha da sua conta no FisioGestão foi alterada agora. Por segurança, todas as sessões abertas foram encerradas.',
-      'Se não foi você, fale imediatamente com o administrador da sua clínica.'], { url: APP_URL, label: 'Entrar no FisioGestão' }),
-  }).catch((e) => console.error('Aviso de senha alterada não enviado', e.message));
+  try { await mailer.send({ to: user.email, ...(await templates.render('senha_alterada', { nome: user.name, clinica: clinic.name }, APP_URL)) }); }
+  catch (e) { console.error('Aviso de senha alterada não enviado', e.message); }
   return { ok: true };
 }, { public: true });
 
@@ -401,16 +384,9 @@ async function sendVerification(clinic, user, { invitedBy = null } = {}) {
   await db.unsafe('INSERT INTO saas.email_verifications(token_hash, clinic_id, user_id, email, expires_at) VALUES ($1,$2,$3,$4,$5)',
     [sha(token), clinic.id, user.id, user.email, Date.now() + VERIFY_TTL_H * 3600e3]);
   const url = `${APP_URL}/#/confirmar-email?t=${token}`;
-  const intro = invitedBy
-    ? `${invitedBy} cadastrou você no FisioGestão da clínica ${clinic.name}.`
-    : `Sua conta no FisioGestão (${clinic.name}) foi criada. Falta só confirmar que este e-mail é seu.`;
   try {
-    await mailer.send({
-      to: user.email, subject: 'Confirme seu e-mail — FisioGestão',
-      text: `Olá, ${user.name}!\n\n${intro}\n\nConfirme seu e-mail abrindo o link abaixo (vale por ${VERIFY_TTL_H} horas):\n${url}\n\nSe você não reconhece este cadastro, ignore esta mensagem.`,
-      html: mailLayout('Confirme seu e-mail', [`Olá, ${escHtml(user.name)}!`, escHtml(intro),
-        `O link vale por <b>${VERIFY_TTL_H} horas</b>. Se você não reconhece este cadastro, ignore esta mensagem.`], { url, label: 'Confirmar meu e-mail' }),
-    });
+    const vars = { nome: user.name, clinica: clinic.name, validade: `${VERIFY_TTL_H} horas`, convidado_por: invitedBy || '' };
+    await mailer.send({ to: user.email, ...(await templates.render(invitedBy ? 'convite_usuario' : 'confirmar_email', vars, url)) });
     return true;
   } catch (e) {
     console.error('Confirmação de e-mail não enviada', e.message);

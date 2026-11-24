@@ -240,6 +240,15 @@ CREATE TABLE IF NOT EXISTS saas.email_verifications (
   used_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+-- Modelos de e-mail personalizados no painel (sem linha = usa o texto padrão do sistema)
+CREATE TABLE IF NOT EXISTS saas.email_templates (
+  key text PRIMARY KEY,
+  subject text NOT NULL,
+  body text NOT NULL,
+  button text NOT NULL DEFAULT '',
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by text
+);
 -- Mercado Pago (assinaturas "preapproval") como segunda forma de pagamento
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS billing_provider text;
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS mp_preapproval_id text;

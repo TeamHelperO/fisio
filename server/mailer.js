@@ -96,14 +96,18 @@ function withHint(cfg, e) {
     : cfg.security === 'ssl' && [25, 587, 2525].includes(cfg.port) ? ' Esta porta normalmente usa STARTTLS — mude a segurança da conexão.' : '';
   return new MailError(`${e.message}${hint}`);
 }
-async function sendSmtp(cfg, msg, envelope) {
+// Abre a conversa SMTP (conexão, TLS e login), executa "work" e encerra. Devolve as etapas para o teste de conexão.
+async function smtpDialog(cfg, work) {
+  const steps = []; const t0 = Date.now();
   const socket = await connect(cfg).catch((e) => { throw withHint(cfg, e); });
   const sess = smtpSession(socket);
   socket.on('timeout', () => socket.destroy(new MailError('Tempo esgotado na conversa com o servidor SMTP.')));
   const host = noBreak(os.hostname()).replace(/[^A-Za-z0-9.-]/g, '') || 'fisiogestao';
   try {
+    steps.push(`Conectado a ${cfg.host}:${cfg.port}${cfg.security === 'ssl' ? ` com SSL (${socket.getProtocol?.() || 'TLS'})` : ''}`);
     const greet = await sess.read();
     if (greet.code !== 220) throw new MailError(`Resposta inesperada do servidor SMTP: ${greet.lines.join(' ')}`);
+    steps.push(`Servidor respondeu: ${greet.lines[0].slice(4, 90)}`);
     let ehlo = await sess.cmd(`EHLO ${host}`, [250]);
     if (cfg.security === 'starttls') {
       if (!ehlo.lines.some((l) => /STARTTLS/i.test(l))) throw new MailError('O servidor não oferece STARTTLS. Use "SSL (porta 465)" ou confira a porta.');
@@ -115,8 +119,9 @@ async function sendSmtp(cfg, msg, envelope) {
       sess.upgrade(secure);
       secure.setTimeout(TIMEOUT);
       secure.on('timeout', () => secure.destroy(new MailError('Tempo esgotado na conversa com o servidor SMTP.')));
+      steps.push(`Conexão protegida com STARTTLS (${secure.getProtocol() || 'TLS'}, certificado válido)`);
       ehlo = await sess.cmd(`EHLO ${host}`, [250]);
-    }
+    } else if (cfg.security !== 'ssl') steps.push('Atenção: conexão sem criptografia');
     if (cfg.user) {
       const auth = ehlo.lines.join(' ').toUpperCase();
       if (auth.includes('PLAIN') || !auth.includes('LOGIN')) {
@@ -126,20 +131,28 @@ async function sendSmtp(cfg, msg, envelope) {
         await sess.cmd(Buffer.from(cfg.user, 'utf8').toString('base64'), [334], { hide: true });
         await sess.cmd(Buffer.from(cfg.pass, 'utf8').toString('base64'), [235], { hide: true });
       }
-    }
+      steps.push(`Login aceito para ${cfg.user}`);
+    } else steps.push('Sem login (usuário não informado)');
+    const out = await work(sess);
+    await sess.cmd('QUIT').catch(() => {});
+    return { out, steps, ms: Date.now() - t0 };
+  } catch (e) {
+    throw withHint(cfg, e);
+  } finally {
+    sess.socket.destroy();
+  }
+}
+async function sendSmtp(cfg, msg, envelope) {
+  const { out } = await smtpDialog(cfg, async (sess) => {
     await sess.cmd(`MAIL FROM:<${envelope.from}>`, [250]);
     for (const rcpt of envelope.to) await sess.cmd(`RCPT TO:<${rcpt}>`, [250, 251]);
     await sess.cmd('DATA', [354]);
     // "dot-stuffing": linhas que começam com ponto ganham um ponto extra
     const data = msg.raw.replace(/\r?\n/g, '\r\n').replace(/^\./gm, '..');
     const done = await sess.cmd(`${data}\r\n.`, [250]);
-    await sess.cmd('QUIT').catch(() => {});
     return done.lines.join(' ').slice(0, 200);
-  } catch (e) {
-    throw withHint(cfg, e);
-  } finally {
-    sess.socket.destroy();
-  }
+  });
+  return out;
 }
 
 function smtpConfig() {
@@ -192,4 +205,26 @@ async function send({ to, subject, text, html, replyTo }) {
   throw new MailError('Nenhum serviço de e-mail configurado. Preencha o SMTP (ou a chave do Resend) no painel.');
 }
 
-module.exports = { send, status, provider, MailError, parseAddress, buildMessage };
+// Teste de conexão: conecta, protege a conexão e faz login, sem enviar nada
+async function verify() {
+  const p = provider();
+  const warn = config.get('EMAIL_FROM') ? null : 'Falta configurar o remetente (EMAIL_FROM) para conseguir enviar.';
+  if (p === 'smtp') {
+    const cfg = smtpConfig();
+    if (cfg.user && !cfg.pass) throw new MailError('Informe a senha do SMTP no painel.');
+    const r = await smtpDialog(cfg, async () => null);
+    return { ok: true, provider: 'smtp', steps: r.steps, ms: r.ms, warning: warn };
+  }
+  if (p === 'resend') {
+    const t0 = Date.now();
+    const res = await fetch((process.env.RESEND_API_BASE || 'https://api.resend.com') + '/domains', {
+      headers: { Authorization: `Bearer ${config.get('RESEND_API_KEY')}` }, signal: AbortSignal.timeout(TIMEOUT),
+    }).catch((e) => { throw new MailError(`Não foi possível falar com o Resend (${e.message}).`); });
+    if (res.status === 401 || res.status === 403) throw new MailError('O Resend recusou a chave de API.');
+    if (!res.ok) throw new MailError(`O Resend respondeu com erro ${res.status}.`);
+    return { ok: true, provider: 'resend', steps: ['Chave de API aceita pelo Resend'], ms: Date.now() - t0, warning: warn };
+  }
+  throw new MailError('Nenhum serviço de e-mail configurado. Preencha o SMTP (ou a chave do Resend) no painel.');
+}
+
+module.exports = { send, verify, status, provider, MailError, parseAddress, buildMessage };

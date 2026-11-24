@@ -11,6 +11,7 @@ const config = require('./config');
 const stripe = require('./stripe');
 const mp = require('./mercadopago');
 const mailer = require('./mailer');
+const templates = require('./emailTemplates');
 
 const SESSION_HOURS = 4;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -287,22 +288,57 @@ module.exports = function registerAdmin(deps) {
 
   // ---------- E-mail (SMTP / Resend): situação e envio de teste ----------
   adminRoute('GET', '/api/admin/email/status', async () => mailer.status());
+  // teste de conexão: conecta, protege a conexão e faz login, sem enviar e-mail
+  adminRoute('POST', '/api/admin/email/verify', async (ctx) => {
+    try {
+      const r = await mailer.verify();
+      await log(ctx, 'testou_conexao_email', r.provider, { ms: r.ms });
+      return r;
+    } catch (e) {
+      await log(ctx, 'conexao_email_falhou', null, { erro: String(e.message).slice(0, 200) });
+      if (e instanceof mailer.MailError) throw new HttpError(502, e.message);
+      throw e;
+    }
+  });
+
+  // ---------- Modelos de e-mail ----------
+  const tplError = (e) => { throw new HttpError(e.status || 500, e.message); };
+  adminRoute('GET', '/api/admin/email/templates', async () => templates.list());
+  adminRoute('PUT', '/api/admin/email/templates/:key', async (ctx) => {
+    await templates.save(ctx.params.key, ctx.body, ctx.admin.email).catch(tplError);
+    await log(ctx, 'alterou_modelo_email', ctx.params.key);
+    return (await templates.list()).find((t) => t.key === ctx.params.key);
+  });
+  adminRoute('DELETE', '/api/admin/email/templates/:key', async (ctx) => {
+    await templates.reset(ctx.params.key).catch(tplError);
+    await log(ctx, 'restaurou_modelo_email', ctx.params.key);
+    return (await templates.list()).find((t) => t.key === ctx.params.key);
+  });
+  adminRoute('POST', '/api/admin/email/templates/:key/preview', async (ctx) => {
+    try { return templates.preview(ctx.params.key, ctx.body); } catch (e) { return tplError(e); }
+  });
+  // envia o modelo (como está na tela, mesmo sem salvar) com dados de exemplo
+  adminRoute('POST', '/api/admin/email/templates/:key/test', async (ctx) => {
+    const to = String(ctx.body.to || ctx.admin.email).trim();
+    if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(to) || to.length > 200) throw new HttpError(400, 'Informe um e-mail válido');
+    let msg;
+    try { msg = templates.preview(ctx.params.key, ctx.body); } catch (e) { return tplError(e); }
+    try {
+      const r = await mailer.send({ to, subject: `[Teste] ${msg.subject}`, text: msg.text, html: msg.html });
+      await log(ctx, 'testou_modelo_email', `${ctx.params.key} → ${to}`);
+      return { ok: true, ...r };
+    } catch (e) {
+      if (e instanceof mailer.MailError) throw new HttpError(502, e.message);
+      throw e;
+    }
+  });
+
   adminRoute('POST', '/api/admin/email/test', async (ctx) => {
     const to = String(ctx.body.to || ctx.admin.email).trim();
     if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(to) || to.length > 200) throw new HttpError(400, 'Informe um e-mail válido');
     const st = mailer.status();
     try {
-      const r = await mailer.send({
-        to, subject: 'Teste de e-mail — FisioGestão',
-        text: `Olá!
-
-Este é um e-mail de teste enviado pelo painel da plataforma FisioGestão.
-Serviço: ${st.detail || st.provider}
-Enviado por: ${ctx.admin.name}
-
-Se você recebeu esta mensagem, o envio de e-mails está funcionando.`,
-        html: `<p>Olá!</p><p>Este é um e-mail de teste enviado pelo painel da plataforma <b>FisioGestão</b>.</p><p>Serviço: ${String(st.detail || st.provider).replace(/[<>&]/g, '')}</p><p>Se você recebeu esta mensagem, o envio de e-mails está funcionando. ✅</p>`,
-      });
+      const r = await mailer.send({ to, ...(await templates.render('teste', { servico: st.detail || st.provider, admin: ctx.admin.name })) });
       await log(ctx, 'testou_email', to, { servico: r.provider });
       return { ok: true, ...r };
     } catch (e) {

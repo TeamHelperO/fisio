@@ -1,0 +1,120 @@
+'use strict';
+// Modelos dos e-mails automáticos da plataforma, editáveis no painel /admin → E-mails.
+// Cada modelo tem assunto, texto (parágrafos separados por linha em branco) e, opcionalmente, um botão com link.
+// Variáveis entre chaves duplas: {{nome}}, {{clinica}}… — só as listadas em cada modelo são aceitas.
+const { sql, currentSql } = require('./core');
+
+const DEFAULTS = {
+  confirmar_email: {
+    name: 'Confirmação de e-mail (cadastro)', when: 'Enviado quando alguém cria uma conta.',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', validade: 'Validade do link (ex.: 48 horas)' }, link: true,
+    subject: 'Confirme seu e-mail — FisioGestão',
+    body: 'Olá, {{nome}}!\n\nSua conta no FisioGestão ({{clinica}}) foi criada. Falta só confirmar que este e-mail é seu.\n\nO link vale por {{validade}}. Se você não reconhece este cadastro, ignore esta mensagem.',
+    button: 'Confirmar meu e-mail',
+  },
+  convite_usuario: {
+    name: 'Novo usuário cadastrado pela clínica', when: 'Enviado quando o administrador da clínica cadastra um usuário ou muda o e-mail dele.',
+    vars: { nome: 'Nome do usuário', clinica: 'Nome da clínica', convidado_por: 'Quem fez o cadastro', validade: 'Validade do link' }, link: true,
+    subject: 'Você foi cadastrado no FisioGestão — {{clinica}}',
+    body: 'Olá, {{nome}}!\n\n{{convidado_por}} cadastrou você no FisioGestão da clínica {{clinica}}. Confirme seu e-mail para começar.\n\nO link vale por {{validade}}. Se você não reconhece este cadastro, ignore esta mensagem.',
+    button: 'Confirmar meu e-mail',
+  },
+  esqueci_senha: {
+    name: 'Esqueci minha senha', when: 'Enviado quando alguém pede uma nova senha na tela de login.',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica', validade: 'Validade do link (ex.: 1 hora)' }, link: true,
+    subject: 'Criar nova senha — FisioGestão',
+    body: 'Olá, {{nome}}!\n\nRecebemos um pedido para criar uma nova senha da sua conta no FisioGestão ({{clinica}}).\n\nO link vale por {{validade}} e só pode ser usado uma vez. Se não foi você, ignore este e-mail: sua senha atual continua valendo.',
+    button: 'Criar nova senha',
+  },
+  senha_alterada: {
+    name: 'Senha alterada', when: 'Enviado logo depois que a senha é trocada pelo link de "Esqueci minha senha".',
+    vars: { nome: 'Nome da pessoa', clinica: 'Nome da clínica' }, link: true,
+    subject: 'Sua senha foi alterada — FisioGestão',
+    body: 'Olá, {{nome}}!\n\nA senha da sua conta no FisioGestão foi alterada agora. Por segurança, todas as sessões abertas foram encerradas.\n\nSe não foi você, fale imediatamente com o administrador da sua clínica.',
+    button: 'Entrar no FisioGestão',
+  },
+  teste: {
+    name: 'E-mail de teste', when: 'Enviado pelo botão "Enviar e-mail de teste" do painel.',
+    vars: { servico: 'Serviço usado (SMTP ou Resend)', admin: 'Administrador que enviou' }, link: false,
+    subject: 'Teste de e-mail — FisioGestão',
+    body: 'Olá!\n\nEste é um e-mail de teste enviado pelo painel da plataforma FisioGestão.\n\nServiço: {{servico}}\nEnviado por: {{admin}}\n\nSe você recebeu esta mensagem, o envio de e-mails está funcionando.',
+    button: '',
+  },
+};
+// valores de exemplo para a prévia e para o envio de teste de um modelo
+const SAMPLE = { nome: 'Ana Souza', clinica: 'Clínica Movimento', validade: '48 horas', convidado_por: 'Dra. Helena Prado', servico: 'SMTP', admin: 'Administrador' };
+
+const VAR_RE = /\{\{\s*([a-z_]+)\s*\}\}/g;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function check(key, t) {
+  const d = DEFAULTS[key];
+  const subject = String(t.subject ?? '').replace(/[\r\n]+/g, ' ').trim();
+  const body = String(t.body ?? '').replace(/\r\n/g, '\n').trim();
+  const button = String(t.button ?? '').replace(/[\r\n]+/g, ' ').trim();
+  if (!subject) throw Object.assign(new Error('O assunto não pode ficar vazio'), { status: 400 });
+  if (subject.length > 200) throw Object.assign(new Error('Assunto muito longo (máx. 200 caracteres)'), { status: 400 });
+  if (!body) throw Object.assign(new Error('O texto não pode ficar vazio'), { status: 400 });
+  if (body.length > 5000) throw Object.assign(new Error('Texto muito longo (máx. 5.000 caracteres)'), { status: 400 });
+  if (button.length > 60) throw Object.assign(new Error('Texto do botão muito longo (máx. 60 caracteres)'), { status: 400 });
+  if (d.link && !button) throw Object.assign(new Error('Este e-mail precisa de um botão com o link — informe o texto do botão'), { status: 400 });
+  const unknown = [...new Set([...`${subject} ${body} ${button}`.matchAll(VAR_RE)].map((m) => m[1]).filter((v) => !(v in d.vars)))];
+  if (unknown.length) throw Object.assign(new Error(`Variável desconhecida neste modelo: ${unknown.map((v) => `{{${v}}}`).join(', ')}`), { status: 400 });
+  return { subject, body, button: d.link ? button : '' };
+}
+
+async function load(key) {
+  const d = DEFAULTS[key];
+  if (!d) throw new Error(`Modelo de e-mail desconhecido: ${key}`);
+  const row = (await currentSql().unsafe('SELECT * FROM saas.email_templates WHERE key=$1', [key]))[0];
+  return { ...d, key, subject: row?.subject ?? d.subject, body: row?.body ?? d.body, button: row?.button ?? d.button,
+    customized: !!row, updated_at: row?.updated_at || null, updated_by: row?.updated_by || null };
+}
+
+// Monta o e-mail final (assunto, texto puro e HTML) a partir do modelo e das variáveis
+function compose(t, vars, url) {
+  const fill = (s, html) => s.replace(VAR_RE, (_, v) => (html ? esc(vars[v] ?? '') : String(vars[v] ?? '')));
+  const subject = fill(t.subject, false).replace(/[\r\n]+/g, ' ').trim();
+  const paragraphs = t.body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const text = paragraphs.map((p) => fill(p, false)).join('\n\n') + (url ? `\n\n${fill(t.button || 'Abrir', false)}: ${url}` : '');
+  const ps = paragraphs.map((p) => `<p style="margin:0 0 14px;font-size:15px;line-height:1.5;color:#17232d">${fill(esc(p), true).replace(/\n/g, '<br>')}</p>`).join('');
+  const btn = url ? `<p style="margin:22px 0"><a href="${esc(url)}" style="background:#0f766e;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:bold;display:inline-block">${esc(fill(t.button || 'Abrir', false))}</a></p>
+<p style="margin:0;font-size:12px;color:#64737f">Se o botão não funcionar, copie e cole este endereço no navegador:<br><span style="word-break:break-all">${esc(url)}</span></p>` : '';
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(subject)}</title></head>
+<body style="margin:0;background:#f4f6f8;font-family:Segoe UI,Arial,sans-serif"><div style="max-width:520px;margin:0 auto;padding:28px 16px">
+<div style="font-weight:bold;font-size:18px;color:#0f766e;margin-bottom:16px">FisioGestão</div>
+<div style="background:#fff;border:1px solid #e3e8ec;border-radius:12px;padding:24px">${ps}${btn}</div>
+<p style="font-size:12px;color:#64737f;margin-top:16px">Mensagem automática do FisioGestão. Não responda a este e-mail.</p></div></body></html>`;
+  return { subject, text, html, paragraphs: paragraphs.map((p) => fill(p, false)), button: url ? fill(t.button || 'Abrir', false) : null };
+}
+
+// Usado pelo sistema: render('esqueci_senha', { nome, clinica, validade }, url)
+async function render(key, vars, url) {
+  return compose(await load(key), vars, url);
+}
+async function list() {
+  return Promise.all(Object.keys(DEFAULTS).map(async (k) => {
+    const t = await load(k);
+    return { key: k, name: t.name, when: t.when, vars: t.vars, link: t.link, subject: t.subject, body: t.body, button: t.button,
+      customized: t.customized, updated_at: t.updated_at, updated_by: t.updated_by };
+  }));
+}
+async function save(key, t, by) {
+  if (!DEFAULTS[key]) throw Object.assign(new Error('Modelo desconhecido'), { status: 404 });
+  const v = check(key, t);
+  await sql.unsafe(`INSERT INTO saas.email_templates(key, subject, body, button, updated_by) VALUES ($1,$2,$3,$4,$5)
+    ON CONFLICT (key) DO UPDATE SET subject=excluded.subject, body=excluded.body, button=excluded.button, updated_at=now(), updated_by=excluded.updated_by`,
+  [key, v.subject, v.body, v.button, by]);
+}
+async function reset(key) {
+  if (!DEFAULTS[key]) throw Object.assign(new Error('Modelo desconhecido'), { status: 404 });
+  await sql.unsafe('DELETE FROM saas.email_templates WHERE key=$1', [key]);
+}
+// prévia de um texto ainda não salvo, com dados de exemplo
+function preview(key, t) {
+  if (!DEFAULTS[key]) throw Object.assign(new Error('Modelo desconhecido'), { status: 404 });
+  const v = check(key, t);
+  return compose({ ...DEFAULTS[key], ...v }, SAMPLE, DEFAULTS[key].link ? 'https://app.exemplo.com.br/#/link-de-exemplo' : null);
+}
+
+module.exports = { DEFAULTS, SAMPLE, render, list, save, reset, preview, check };
