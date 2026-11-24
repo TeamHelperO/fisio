@@ -284,6 +284,32 @@ CREATE TABLE IF NOT EXISTS saas.admin_password_resets (
   used_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+-- Campanhas de e-mail marketing (só para quem aceitou receber novidades)
+CREATE TABLE IF NOT EXISTS saas.campaigns (
+  id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name text NOT NULL,
+  audience text NOT NULL DEFAULT 'todos',
+  subject text NOT NULL,
+  body text NOT NULL,
+  button text NOT NULL DEFAULT '',
+  button_url text,
+  status text NOT NULL DEFAULT 'rascunho',
+  created_by text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz,
+  started_at timestamptz,
+  finished_at timestamptz
+);
+CREATE TABLE IF NOT EXISTS saas.campaign_sends (
+  campaign_id integer NOT NULL REFERENCES saas.campaigns(id) ON DELETE CASCADE,
+  email text NOT NULL,
+  name text,
+  clinic_name text,
+  status text NOT NULL DEFAULT 'pendente',
+  error text,
+  sent_at timestamptz,
+  PRIMARY KEY (campaign_id, email)
+);
 -- Mercado Pago (assinaturas "preapproval") como segunda forma de pagamento
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS billing_provider text;
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS mp_preapproval_id text;

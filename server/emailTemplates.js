@@ -149,11 +149,12 @@ function merge(key, row) {
 }
 
 // Monta o e-mail final (assunto, texto puro e HTML) a partir do modelo e das variáveis
-function compose(t, vars, url) {
+function compose(t, vars, url, { footer = null } = {}) {
   const fill = (s, html) => s.replace(VAR_RE, (_, v) => (html ? esc(vars[v] ?? '') : String(vars[v] ?? '')));
   const subject = fill(t.subject, false).replace(/[\r\n]+/g, ' ').trim();
   const paragraphs = t.body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-  const text = paragraphs.map((p) => fill(p, false)).join('\n\n') + (url ? `\n\n${fill(t.button || 'Abrir', false)}: ${url}` : '');
+  const text = paragraphs.map((p) => fill(p, false)).join('\n\n') + (url ? `\n\n${fill(t.button || 'Abrir', false)}: ${url}` : '')
+    + (footer ? `\n\n--\n${footer.text}: ${footer.url}` : '');
   const ps = paragraphs.map((p) => `<p style="margin:0 0 14px;font-size:15px;line-height:1.5;color:#17232d">${fill(esc(p), true).replace(/\n/g, '<br>')}</p>`).join('');
   const btn = url ? `<p style="margin:22px 0"><a href="${esc(url)}" style="background:#0f766e;color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:bold;display:inline-block">${esc(fill(t.button || 'Abrir', false))}</a></p>
 <p style="margin:0;font-size:12px;color:#64737f">Se o botão não funcionar, copie e cole este endereço no navegador:<br><span style="word-break:break-all">${esc(url)}</span></p>` : '';
@@ -161,7 +162,7 @@ function compose(t, vars, url) {
 <body style="margin:0;background:#f4f6f8;font-family:Segoe UI,Arial,sans-serif"><div style="max-width:520px;margin:0 auto;padding:28px 16px">
 <div style="font-weight:bold;font-size:18px;color:#0f766e;margin-bottom:16px">FisioGestão</div>
 <div style="background:#fff;border:1px solid #e3e8ec;border-radius:12px;padding:24px">${ps}${btn}</div>
-<p style="font-size:12px;color:#64737f;margin-top:16px">Mensagem automática do FisioGestão. Não responda a este e-mail.</p></div></body></html>`;
+${footer ? `<p style="font-size:12px;color:#64737f;margin-top:16px">${esc(footer.text)}: <a href="${esc(footer.url)}" style="color:#64737f">descadastrar</a></p>` : '<p style="font-size:12px;color:#64737f;margin-top:16px">Mensagem automática do FisioGestão. Não responda a este e-mail.</p>'}</div></body></html>`;
   return { subject, text, html, paragraphs: paragraphs.map((p) => fill(p, false)), button: url ? fill(t.button || 'Abrir', false) : null };
 }
 
@@ -212,4 +213,4 @@ function preview(key, t) {
   return compose({ ...DEFAULTS[key], ...v }, SAMPLE, DEFAULTS[key].link ? 'https://app.exemplo.com.br/#/link-de-exemplo' : null);
 }
 
-module.exports = { DEFAULTS, SAMPLE, render, list, save, reset, preview, check, setEnabled, isEnabled };
+module.exports = { DEFAULTS, SAMPLE, render, list, save, reset, preview, check, setEnabled, isEnabled, compose, VAR_RE };

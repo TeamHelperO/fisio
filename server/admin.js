@@ -598,5 +598,11 @@ module.exports = function registerAdmin(deps) {
   adminRoute('GET', '/api/admin/audit', async () => sql.unsafe('SELECT * FROM saas.admin_audit ORDER BY id DESC LIMIT 500'));
 
   // limpeza de sessões administrativas vencidas (chamada junto com a limpeza geral)
-  return { cleanup: async () => { await ensureCore(); await sql.unsafe('DELETE FROM saas.admin_sessions WHERE expires_at < $1', [Date.now()]); } };
+  // ---------- Campanhas de e-mail marketing ----------
+  const campaigns = require('./campaigns')({ adminRoute, log, clinicAccess, unsubscribeUrl, APP_BASE });
+
+  return {
+    cleanup: async () => { await ensureCore(); await sql.unsafe('DELETE FROM saas.admin_sessions WHERE expires_at < $1', [Date.now()]); },
+    continueCampaigns: () => campaigns.continueAll(),
+  };
 };

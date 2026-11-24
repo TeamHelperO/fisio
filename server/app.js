@@ -1529,6 +1529,7 @@ async function housekeeping() {
   await sql.unsafe('DELETE FROM saas.email_verifications WHERE expires_at < $1', [Date.now() - 7 * 24 * 3600e3]);
   await sql.unsafe("DELETE FROM saas.email_log WHERE created_at < now() - interval '180 days'");
   await adminArea.cleanup();
+  await adminArea.continueCampaigns().catch((e) => console.error('Campanhas:', e.message));
   return lifecycle.daily();
 }
 route('GET', '/api/cron/housekeeping', async (ctx) => {

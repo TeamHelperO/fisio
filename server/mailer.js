@@ -24,11 +24,12 @@ const encWord = (s) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(
 const fmtAddr = ({ name, address }) => (name ? `${/^[\x20-\x7e]*$/.test(name) ? `"${name.replace(/"/g, '')}"` : encWord(name)} <${address}>` : address);
 const b64lines = (s) => Buffer.from(s, 'utf8').toString('base64').replace(/.{1,76}/g, '$&\r\n');
 
-function buildMessage({ from, to, replyTo, subject, text, html }) {
+function buildMessage({ from, to, replyTo, subject, text, html, listUnsubscribe }) {
   const id = `<${crypto.randomUUID()}@${from.address.split('@')[1]}>`;
   const head = [
     `From: ${fmtAddr(from)}`, `To: ${to.map(fmtAddr).join(', ')}`, replyTo ? `Reply-To: ${fmtAddr(replyTo)}` : null,
     `Subject: ${encWord(noBreak(subject))}`, `Date: ${new Date().toUTCString().replace('GMT', '+0000')}`, `Message-ID: ${id}`, 'MIME-Version: 1.0',
+    listUnsubscribe && /^https:\/\/[^\s<>]+$/.test(listUnsubscribe) ? `List-Unsubscribe: <${listUnsubscribe}>` : null,
   ].filter(Boolean);
   let body;
   if (html) {
@@ -176,7 +177,7 @@ function status() {
 }
 
 // send({ to, subject, text, html, replyTo }) → { provider, id, response }
-async function send({ to, subject, text, html, replyTo }) {
+async function send({ to, subject, text, html, replyTo, listUnsubscribe }) {
   const fromRaw = config.get('EMAIL_FROM');
   if (!fromRaw) throw new MailError('Configure o remetente (EMAIL_FROM) no painel.');
   const from = parseAddress(fromRaw);
@@ -188,7 +189,7 @@ async function send({ to, subject, text, html, replyTo }) {
   if (p === 'smtp') {
     const cfg = smtpConfig();
     if (cfg.user && !cfg.pass) throw new MailError('Informe a senha do SMTP no painel.');
-    const msg = buildMessage({ from, to: rcpts, replyTo: reply, subject, text, html });
+    const msg = buildMessage({ from, to: rcpts, replyTo: reply, subject, text, html, listUnsubscribe });
     const response = await sendSmtp(cfg, msg, { from: from.address, to: rcpts.map((r) => r.address) });
     return { provider: 'smtp', id: msg.messageId, response };
   }
@@ -196,7 +197,8 @@ async function send({ to, subject, text, html, replyTo }) {
     const res = await fetch(process.env.RESEND_API_BASE || 'https://api.resend.com/emails', {
       method: 'POST', signal: AbortSignal.timeout(TIMEOUT),
       headers: { Authorization: `Bearer ${config.get('RESEND_API_KEY')}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: fmtAddr(from), to: rcpts.map((r) => r.address), subject: noBreak(subject), text, html, reply_to: reply ? reply.address : undefined }),
+      body: JSON.stringify({ from: fmtAddr(from), to: rcpts.map((r) => r.address), subject: noBreak(subject), text, html, reply_to: reply ? reply.address : undefined,
+        headers: listUnsubscribe ? { 'List-Unsubscribe': `<${listUnsubscribe}>` } : undefined }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new MailError(`O Resend recusou o envio: ${data.message || res.status}`);

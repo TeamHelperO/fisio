@@ -142,7 +142,7 @@ function setupScreen(enabled) {
 }
 
 // ---------------- Layout ----------------
-const NAV = [['dashboard', 'Dashboard', 'dashboard'], ['clinicas', 'Clínicas', 'users'], ['financeiro', 'Financeiro', 'wallet'], ['usuarios', 'Usuários e marketing', 'phone'], ['apis', 'APIs e integrações', 'settings'], ['emails', 'E-mails', 'file'], ['admins', 'Administradores', 'shield'], ['auditoria', 'Registro de ações', 'history']];
+const NAV = [['dashboard', 'Dashboard', 'dashboard'], ['clinicas', 'Clínicas', 'users'], ['financeiro', 'Financeiro', 'wallet'], ['usuarios', 'Usuários e marketing', 'phone'], ['apis', 'APIs e integrações', 'settings'], ['emails', 'E-mails', 'file'], ['campanhas', 'Campanhas', 'trending'], ['admins', 'Administradores', 'shield'], ['auditoria', 'Registro de ações', 'history']];
 function buildShell() {
   const nav = h('nav', { class: 'nav' }, NAV.map(([p, l, ic]) => h('a', { href: `#/${p}`, 'data-path': p, onclick: () => app.classList.remove('menu-open') }, icon(ic), h('span', { class: 'grow' }, l))));
   const content = h('main', { class: 'content', tabindex: '-1' });
@@ -163,7 +163,7 @@ function buildShell() {
   shell = { nav, content };
 }
 
-const PAGES = { dashboard, clinicas, financeiro, usuarios, apis, emails, admins, auditoria };
+const PAGES = { dashboard, clinicas, financeiro, usuarios, apis, emails, campanhas, admins, auditoria };
 let seq = 0;
 async function router() {
   if (!me) return;
@@ -457,6 +457,126 @@ function editTemplate(t) {
 }
 function debounceLocal(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
+// ---------------- Campanhas de e-mail marketing ----------------
+async function campanhas(view) {
+  const [list, meta] = await Promise.all([get(A('/campaigns')), get(A('/campaigns/meta'))]);
+  const ST = { rascunho: ['gray', 'Rascunho'], enviando: ['amber', 'Enviando'], enviada: ['green', 'Enviada'] };
+  const progress = (c) => {
+    if (!c.stats) return '—';
+    const st = c.stats;
+    return h('span', null, `${st.sent} de ${st.total} enviados`, st.failed ? h('div', null, h('small', { style: { color: 'var(--red)' } }, `${st.failed} falha(s)`)) : null,
+      st.skipped ? h('div', null, h('small', { class: 'muted' }, `${st.skipped} descadastrado(s) no meio`)) : null);
+  };
+  const actions = (c) => {
+    const b = [];
+    if (c.status === 'rascunho') {
+      b.push(h('button', { class: 'btn sm', onclick: () => editCampaign(c, meta) }, icon('edit', 14), 'Editar'));
+      b.push(h('button', { class: 'btn sm primary', onclick: () => sendCampaign(c, meta) }, 'Enviar'));
+    }
+    if (c.status === 'enviando') b.push(h('button', { class: 'btn sm primary', onclick: () => runSending(c, null) }, 'Continuar envio'));
+    if (c.stats?.failed && c.status !== 'enviando') b.push(h('button', { class: 'btn sm', onclick: () => runSending(c, 'retry') }, 'Reenviar falhas'));
+    if (c.status !== 'rascunho') b.push(h('button', { class: 'btn sm ghost', onclick: () => showSends(c) }, 'Ver envios'));
+    b.push(h('button', { class: 'btn sm ghost', onclick: async () => { try { const r = await post(A(`/campaigns/${c.id}/duplicate`)); toast('Campanha duplicada'); refresh(); setTimeout(() => editCampaign({ ...c, id: r.id, name: `${c.name} (cópia)`, status: 'rascunho' }, meta), 300); } catch (e) { toast(e.message, 'error'); } } }, 'Duplicar'));
+    if (c.status !== 'enviando') b.push(h('button', { class: 'icon-btn', title: 'Excluir', 'aria-label': 'Excluir campanha', onclick: async () => {
+      if (!(await confirmDialog(`Excluir a campanha "${c.name}"?`, { danger: true, okLabel: 'Excluir' }))) return;
+      try { await del(A(`/campaigns/${c.id}`)); toast('Campanha excluída'); refresh(); } catch (e) { toast(e.message, 'error'); }
+    } }, icon('trash', 15)));
+    return b;
+  };
+  view.append(head('Campanhas', 'E-mails de novidades e ofertas — só para quem aceitou receber', h('button', { class: 'btn primary', onclick: () => editCampaign(null, meta) }, icon('plus', 15), 'Nova campanha')),
+    h('div', { class: 'kpis' }, meta.audiences.map((a) => kpi(a.label, a.count, 'users', 'contatos com aceite', a.key === 'todos' ? 'good' : ''))),
+    card('Campanhas', list.length ? table(['Campanha', 'Público', 'Assunto', 'Situação', 'Envio', ''], list.map((c) => h('tr', null,
+      h('td', null, h('b', null, c.name), h('div', null, h('small', { class: 'muted' }, `${fmtTs(c.started_at || c.created_at)} · ${c.created_by || ''}`))),
+      h('td', null, c.audience_label), h('td', null, c.subject), h('td', null, pill(...(ST[c.status] || ['gray', c.status]))), h('td', { class: 'nowrap' }, progress(c)),
+      h('td', { class: 'actions' }, actions(c))))) : empty('Nenhuma campanha ainda.', h('button', { class: 'btn primary', onclick: () => editCampaign(null, meta) }, 'Criar a primeira'))),
+    h('p', null, h('small', { class: 'muted' }, 'LGPD: as campanhas só vão para quem marcou "quero receber novidades", sempre com o link de descadastro no rodapé (e o botão "cancelar inscrição" do Gmail/Outlook). Quem se descadastra durante o envio não recebe.')));
+}
+
+function editCampaign(c, meta) {
+  const v = c || { name: '', audience: 'todos', subject: '', body: 'Olá, {{nome}}!\n\n', button: 'Abrir o FisioGestão', button_url: '' };
+  const name = h('input', { class: 'input', value: v.name, maxLength: 120, placeholder: 'ex.: Novidade — biblioteca de exercícios' });
+  const audience = h('select', { class: 'input' }, meta.audiences.map((a) => h('option', { value: a.key, selected: a.key === v.audience }, `${a.label} (${a.count})`)));
+  const subject = h('input', { class: 'input', value: v.subject, maxLength: 200 });
+  const body = h('textarea', { class: 'input', rows: 10 }); body.value = v.body;
+  const button = h('input', { class: 'input', value: v.button || '', maxLength: 60, placeholder: 'Deixe em branco para não ter botão' });
+  const url = h('input', { class: 'input', type: 'url', value: v.button_url || '', placeholder: 'https://… (em branco = abre o sistema)' });
+  const prev = h('div', { class: 'mail-preview' }); const err = h('div');
+  const values = () => ({ name: name.value, audience: audience.value, subject: subject.value, body: body.value, button: button.value, button_url: url.value });
+  const refreshPreview = debounceLocal(async () => {
+    try {
+      const r = await post(A('/campaigns/preview'), values()); err.replaceChildren();
+      prev.replaceChildren(h('div', { class: 'mail-subject' }, h('small', null, 'Assunto'), h('b', null, r.subject)),
+        h('div', { class: 'mail-card' }, h('div', { class: 'mail-brand' }, 'FisioGestão'),
+          r.paragraphs.map((p) => h('p', null, ...p.split('\n').flatMap((line, i) => (i ? [h('br'), line] : [line])))), r.button ? h('span', { class: 'mail-btn' }, r.button) : null),
+        h('small', { class: 'muted', style: { display: 'block', marginTop: '8px' } }, 'Rodapé automático: "Você recebe este e-mail porque aceitou receber novidades… descadastrar".'));
+    } catch (e) { err.replaceChildren(h('div', { class: 'notice' }, icon('alert'), h('span', null, e.message))); }
+  }, 400);
+  [name, subject, body, button, url].forEach((el) => el.addEventListener('input', refreshPreview));
+  const ins = (vname) => { const tag = `{{${vname}}}`; const el = document.activeElement === subject ? subject : body; const a = el.selectionStart ?? el.value.length;
+    el.value = el.value.slice(0, a) + tag + el.value.slice(el.selectionEnd ?? a); el.focus(); el.selectionStart = el.selectionEnd = a + tag.length; refreshPreview(); };
+  const to = h('input', { class: 'input', type: 'email', value: me?.email || '', style: { maxWidth: '220px' } });
+  const save = async () => {
+    if (c?.id) await put(A(`/campaigns/${c.id}`), values()); else c = { ...values(), id: (await post(A('/campaigns'), values())).id, status: 'rascunho' };
+    return c;
+  };
+  const m = modal({ title: c?.id ? 'Editar campanha' : 'Nova campanha', wide: true, body: h('div', { class: 'grid g2 tpl-edit' },
+    h('div', { class: 'stack' },
+      h('label', { class: 'field' }, h('span', null, 'Nome da campanha (só você vê)'), name),
+      h('label', { class: 'field' }, h('span', null, 'Para quem'), audience, h('small', { class: 'help' }, 'Só contatos que aceitaram receber novidades. O número é de hoje; a lista é fechada na hora do envio.')),
+      h('label', { class: 'field' }, h('span', null, 'Assunto'), subject),
+      h('label', { class: 'field' }, h('span', null, 'Texto (linha em branco separa parágrafos)'), body),
+      h('div', { class: 'grid g2' }, h('label', { class: 'field' }, h('span', null, 'Texto do botão'), button), h('label', { class: 'field' }, h('span', null, 'Link do botão'), url)),
+      h('div', null, h('small', { class: 'muted' }, 'Variáveis: '), Object.entries(meta.vars).map(([k, label]) => h('button', { type: 'button', class: 'btn sm ghost', title: label, onmousedown: (e) => e.preventDefault(), onclick: () => ins(k) }, `{{${k}}}`))),
+      err),
+    h('div', { class: 'stack' }, h('small', { class: 'muted' }, 'Prévia (com dados de exemplo)'), prev,
+      h('div', { class: 'row' }, to, h('button', { class: 'btn sm', onclick: async (e) => {
+        const b = e.currentTarget; b.disabled = true;
+        try { await post(A('/campaigns/test'), { ...values(), to: to.value }); toast(`Teste enviado para ${to.value}`); } catch (er) { toast(er.message, 'error'); }
+        b.disabled = false;
+      } }, 'Enviar teste para mim')))),
+  actions: [
+    h('button', { class: 'btn ghost', onclick: () => m.close() }, 'Cancelar'),
+    h('button', { class: 'btn', onclick: async () => { try { await save(); toast('Rascunho salvo'); m.close(); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Salvar rascunho'),
+    h('button', { class: 'btn primary', onclick: async () => { try { const saved = await save(); m.close(); sendCampaign(saved, meta); } catch (e) { toast(e.message, 'error'); } } }, 'Salvar e enviar…')] });
+  refreshPreview();
+}
+
+async function sendCampaign(c, meta) {
+  const aud = meta.audiences.find((a) => a.key === c.audience);
+  if (!(await confirmDialog(`Enviar "${c.name}" agora para ${aud?.count ?? '?'} contato(s) — ${aud?.label || c.audience}?\n\nDepois de enviada, a campanha não pode ser alterada.`, { okLabel: 'Enviar agora' }))) return;
+  runSending(c, 'send');
+}
+// envia em lotes e mostra o andamento (fechar a janela não perde nada: a rotina diária continua)
+function runSending(c, mode) {
+  const bar = h('div', { class: 'progress' }, h('div', { class: 'progress-fill' }));
+  const label = h('p', { style: { margin: 0 } }, 'Preparando…');
+  let stop = false;
+  const m = modal({ title: `Enviando: ${c.name}`, body: h('div', { class: 'stack' }, bar, label,
+    h('small', { class: 'help' }, 'Pode fechar esta janela: o envio continua depois (pelo botão "Continuar envio" ou sozinho na rotina diária).')),
+  onClose: () => { stop = true; refresh(); } });
+  (async () => {
+    let path = mode === 'send' ? `/campaigns/${c.id}/send` : mode === 'retry' ? `/campaigns/${c.id}/retry` : `/campaigns/${c.id}/continue`;
+    try {
+      while (!stop) {
+        const r = await post(A(path));
+        const done = r.sent + r.failed + (r.skipped || 0);
+        bar.firstChild.style.width = `${r.total ? Math.round((done / r.total) * 100) : 100}%`;
+        label.textContent = `${r.sent} de ${r.total} enviados${r.failed ? ` · ${r.failed} falha(s)` : ''}${r.skipped ? ` · ${r.skipped} descadastrado(s)` : ''}`;
+        if (r.done) { label.textContent += ' — concluído.'; toast('Campanha enviada'); break; }
+        path = `/campaigns/${c.id}/continue`;
+      }
+    } catch (e) { label.replaceChildren(h('span', { style: { color: 'var(--red)' } }, e.message)); }
+  })();
+}
+async function showSends(c) {
+  const rows = await get(A(`/campaigns/${c.id}/sends`));
+  const ST = { enviado: ['green', 'Enviado'], falhou: ['red', 'Falhou'], pendente: ['gray', 'Na fila'], enviando: ['amber', 'Enviando'], pulado: ['gray', 'Descadastrado'] };
+  modal({ title: `Envios: ${c.name}`, wide: true, body: rows.length ? table(['Contato', 'Clínica', 'Situação', 'Quando'], rows.map((r) => h('tr', null,
+    h('td', null, r.name || '—', h('div', null, h('small', { class: 'muted' }, r.email))), h('td', null, r.clinic_name || '—'),
+    h('td', null, pill(...(ST[r.status] || ['gray', r.status])), r.error ? h('div', null, h('small', { class: 'muted' }, r.error)) : null),
+    h('td', { class: 'nowrap' }, fmtTs(r.sent_at))))) : empty('Nenhum envio.') });
+}
+
 // ---------------- APIs e integrações ----------------
 async function apis(view) {
   const [fields, mail] = await Promise.all([get(A('/config')), get(A('/email/status'))]);
@@ -580,7 +700,7 @@ async function auditoria(view) {
   const list = await get(A('/audit'));
   const ACT = { login: 'Entrou', login_falhou: 'Login recusado', criou_admin_inicial: 'Criou o administrador inicial', criou_admin: 'Criou administrador', alterou_admin: 'Alterou administrador',
     alterou_clinica: 'Alterou clínica', login_2fa_falhou: 'Código de duas etapas errado', ativou_2fa: 'Ativou duas etapas', desativou_2fa: 'Desativou duas etapas',
-    gerou_codigos_recuperacao: 'Gerou códigos de recuperação', zerou_2fa_de_admin: 'Zerou duas etapas de outro admin', pediu_nova_senha_admin: 'Pediu nova senha', redefiniu_senha_admin: 'Redefiniu a senha', alterou_config: 'Alterou configuração', removeu_config: 'Removeu configuração', exportou_marketing: 'Exportou contatos de marketing' };
+    gerou_codigos_recuperacao: 'Gerou códigos de recuperação', criou_campanha: 'Criou campanha', enviou_campanha: 'Enviou campanha', testou_campanha: 'Testou campanha', excluiu_campanha: 'Excluiu campanha', reenviou_falhas_campanha: 'Reenviou falhas da campanha', zerou_2fa_de_admin: 'Zerou duas etapas de outro admin', pediu_nova_senha_admin: 'Pediu nova senha', redefiniu_senha_admin: 'Redefiniu a senha', alterou_config: 'Alterou configuração', removeu_config: 'Removeu configuração', exportou_marketing: 'Exportou contatos de marketing' };
   view.append(head('Registro de ações', 'Últimas 500 ações na área administrativa'),
     card('Ações', list.length ? table(['Data/hora', 'Administrador', 'Ação', 'Alvo', 'Detalhes', 'IP'], list.map((l) => h('tr', null,
       h('td', { class: 'nowrap' }, fmtTs(l.ts)), h('td', null, l.admin_name || '—'), h('td', null, ACT[l.action] || l.action), h('td', null, l.target || '—'),
