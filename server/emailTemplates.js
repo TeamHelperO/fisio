@@ -40,6 +40,20 @@ const DEFAULTS = {
     body: 'Olá!\n\nEste é um e-mail de teste enviado pelo painel da plataforma FisioGestão.\n\nServiço: {{servico}}\nEnviado por: {{admin}}\n\nSe você recebeu esta mensagem, o envio de e-mails está funcionando.',
     button: '',
   },
+  admin_esqueci_senha: {
+    group: 'Administradores da plataforma', name: 'Admin: esqueci minha senha', when: 'Enviado quando um administrador do /admin pede uma nova senha.',
+    vars: { nome: 'Nome do administrador', validade: 'Validade do link (ex.: 1 hora)' }, link: true,
+    subject: 'Nova senha do painel administrativo — FisioGestão',
+    body: 'Olá, {{nome}}!\n\nRecebemos um pedido para criar uma nova senha da sua conta de administrador da plataforma FisioGestão.\n\nO link vale por {{validade}} e só pode ser usado uma vez. A verificação em duas etapas continua valendo. Se não foi você, ignore este e-mail e avise os outros administradores.',
+    button: 'Criar nova senha',
+  },
+  admin_senha_alterada: {
+    group: 'Administradores da plataforma', name: 'Admin: senha alterada', when: 'Enviado logo depois que a senha de um administrador é trocada pelo link.',
+    vars: { nome: 'Nome do administrador' }, link: true,
+    subject: 'Sua senha do painel administrativo foi alterada',
+    body: 'Olá, {{nome}}!\n\nA senha da sua conta de administrador da plataforma FisioGestão foi alterada agora. Todas as sessões abertas foram encerradas.\n\nSe não foi você, avise imediatamente os outros administradores.',
+    button: 'Entrar no painel',
+  },
   boas_vindas: {
     group: 'Ciclo do cliente', optional: true, name: 'Boas-vindas com primeiros passos',
     when: 'Enviado uma vez, cerca de 1 hora depois do cadastro da clínica.',

@@ -380,3 +380,7 @@ textarea.input { resize: vertical; min-height: 64px; }
 @media (max-width: 900px) { .tpl-edit { grid-template-columns: 1fr; } }
 .switch-row { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
 .switch-row input { width: 16px; height: 16px; accent-color: #6366f1; }
+.qr-box { display: flex; justify-content: center; }
+.qr-box svg { width: 210px; height: 210px; border: 1px solid var(--border); border-radius: 8px; }
+.recovery-codes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.recovery-codes code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; text-align: center; font-size: 14px; letter-spacing: .05em; }

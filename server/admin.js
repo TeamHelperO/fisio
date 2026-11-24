@@ -13,8 +13,11 @@ const mp = require('./mercadopago');
 const mailer = require('./mailer');
 const templates = require('./emailTemplates');
 const notify = require('./notify');
+const totp = require('./totp');
+const { sealPlatform, openPlatform } = require('./core');
 
 const SESSION_HOURS = 4;
+const APP_BASE = () => (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '');
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 module.exports = function registerAdmin(deps) {
@@ -33,7 +36,7 @@ module.exports = function registerAdmin(deps) {
     if (!token) return null;
     const s = (await sql.unsafe('SELECT * FROM saas.admin_sessions WHERE token_hash=$1', [sha(token)]))[0];
     if (!s || s.expires_at < Date.now()) { if (s) await sql.unsafe('DELETE FROM saas.admin_sessions WHERE token_hash=$1', [s.token_hash]); return null; }
-    const a = (await sql.unsafe('SELECT id, name, email, active FROM saas.admins WHERE id=$1', [s.admin_id]))[0];
+    const a = (await sql.unsafe('SELECT id, name, email, active, totp_enabled FROM saas.admins WHERE id=$1', [s.admin_id]))[0];
     if (!a || !a.active) return null;
     await sql.unsafe('UPDATE saas.admin_sessions SET expires_at=$2 WHERE token_hash=$1', [s.token_hash, Date.now() + SESSION_HOURS * 3600e3]);
     setCookie(ctx.res, token, SESSION_HOURS * 3600);
@@ -91,11 +94,172 @@ module.exports = function registerAdmin(deps) {
       throw new HttpError(401, 'E-mail ou senha incorretos');
     }
     await clearRate(key);
+    if (a.totp_enabled) {
+      const ticket = crypto.randomBytes(32).toString('base64url');
+      await sql.unsafe('DELETE FROM saas.admin_login_tickets WHERE admin_id=$1 OR expires_at < $2', [a.id, Date.now()]);
+      await sql.unsafe('INSERT INTO saas.admin_login_tickets(token_hash, admin_id, expires_at) VALUES ($1,$2,$3)', [sha(ticket), a.id, Date.now() + 5 * 60e3]);
+      return { needs2fa: true, ticket };
+    }
     await sql.unsafe('UPDATE saas.admins SET last_login=now() WHERE id=$1', [a.id]);
     ctx.admin = a; await log(ctx, 'login');
     await createSession(ctx.res, a.id, ctx.ip);
     return { ok: true };
   }, { public: true });
+
+  // segunda etapa do login: código do app autenticador ou um código de recuperação
+  route('POST', '/api/admin/login/2fa', async (ctx) => {
+    const ipKey = `admin2fa|${ctx.ip}`;
+    await checkRate(ipKey);
+    const t = (await sql.unsafe('SELECT * FROM saas.admin_login_tickets WHERE token_hash=$1', [sha(String(ctx.body.ticket || ''))]))[0];
+    if (!t || Number(t.expires_at) < Date.now() || t.attempts >= 5) {
+      if (t) await sql.unsafe('DELETE FROM saas.admin_login_tickets WHERE token_hash=$1', [t.token_hash]);
+      throw new HttpError(401, 'O tempo para digitar o código acabou. Entre de novo com e-mail e senha.');
+    }
+    const a = (await sql.unsafe('SELECT * FROM saas.admins WHERE id=$1', [t.admin_id]))[0];
+    if (!a || !a.active || !a.totp_enabled) throw new HttpError(401, 'Entre de novo com e-mail e senha.');
+    const code = String(ctx.body.code || '').trim();
+    let via = null;
+    const step = totp.verify(openPlatform(a.totp_secret_enc), code, { lastStep: Number(a.totp_last_step) });
+    if (step !== null) {
+      via = 'app';
+      // grava o passo usado: o mesmo código não serve duas vezes
+      const upd = await sql.unsafe('UPDATE saas.admins SET totp_last_step=$2 WHERE id=$1 AND totp_last_step < $2 RETURNING id', [a.id, step]);
+      if (!upd.length) via = null;
+    } else {
+      const norm = totp.normRecovery(code);
+      const list = JSON.parse(a.recovery_codes || '[]');
+      const idx = norm.length === 8 ? list.indexOf(sha(`rc:${norm}`)) : -1;
+      if (idx >= 0) {
+        list.splice(idx, 1);
+        await sql.unsafe('UPDATE saas.admins SET recovery_codes=$2 WHERE id=$1', [a.id, JSON.stringify(list)]);
+        via = 'codigo_recuperacao';
+      }
+    }
+    if (!via) {
+      await sql.unsafe('UPDATE saas.admin_login_tickets SET attempts = attempts + 1 WHERE token_hash=$1', [t.token_hash]);
+      await failRate(ipKey, 10, 30);
+      ctx.admin = null; await log(ctx, 'login_2fa_falhou', a.email);
+      throw new HttpError(401, 'Código incorreto. Confira o app autenticador e tente de novo.');
+    }
+    await sql.unsafe('DELETE FROM saas.admin_login_tickets WHERE token_hash=$1', [t.token_hash]);
+    await sql.unsafe('UPDATE saas.admins SET last_login=now() WHERE id=$1', [a.id]);
+    ctx.admin = a; await log(ctx, 'login', null, { verificacao: via });
+    await createSession(ctx.res, a.id, ctx.ip);
+    const left = JSON.parse((await sql.unsafe('SELECT recovery_codes FROM saas.admins WHERE id=$1', [a.id]))[0].recovery_codes || '[]').length;
+    return { ok: true, via, recovery_left: left };
+  }, { public: true });
+
+  // ---------- Esqueci minha senha (administradores) ----------
+  const ADMIN_RESET_MIN = 60;
+  route('POST', '/api/admin/password/forgot', async (ctx) => {
+    const email = String(ctx.body.email || '').trim().toLowerCase().slice(0, 160);
+    if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Informe um e-mail válido');
+    const ipKey = `admin-forgot|${ctx.ip}`; const emailKey = `admin-forgot|${email}`;
+    await checkRate(ipKey); await checkRate(emailKey);
+    await failRate(ipKey, 5, 30); await failRate(emailKey, 3, 60);
+    const started = Date.now();
+    const a = (await sql.unsafe('SELECT * FROM saas.admins WHERE email=$1 AND active', [email]))[0];
+    if (a) {
+      const token = crypto.randomBytes(32).toString('base64url');
+      await sql.unsafe('DELETE FROM saas.admin_password_resets WHERE admin_id=$1', [a.id]);
+      await sql.unsafe('INSERT INTO saas.admin_password_resets(token_hash, admin_id, expires_at) VALUES ($1,$2,$3)', [sha(token), a.id, Date.now() + ADMIN_RESET_MIN * 60e3]);
+      try {
+        await notify.sendTemplate('admin_esqueci_senha', { to: a.email, url: `${APP_BASE()}/admin#/redefinir-senha?t=${token}`, vars: { nome: a.name, validade: '1 hora' } });
+        ctx.admin = null; await log(ctx, 'pediu_nova_senha_admin', a.email);
+      } catch (e) {
+        console.error('Admin: e-mail de nova senha não enviado', e.message);
+        await sql.unsafe('DELETE FROM saas.admin_password_resets WHERE token_hash=$1', [sha(token)]);
+      }
+    }
+    const wait = 900 + crypto.randomInt(400) - (Date.now() - started);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    return { ok: true, message: 'Se houver um administrador com este e-mail, enviamos um link para criar uma nova senha. O link vale por 1 hora.' };
+  }, { public: true });
+  async function adminResetTicket(token) {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,60}$/.test(token)) return null;
+    const r = (await sql.unsafe('SELECT * FROM saas.admin_password_resets WHERE token_hash=$1', [sha(token)]))[0];
+    return r && !r.used_at && Number(r.expires_at) >= Date.now() ? r : null;
+  }
+  route('POST', '/api/admin/password/check', async (ctx) => {
+    const key = `admin-reset|${ctx.ip}`; await checkRate(key);
+    const r = await adminResetTicket(ctx.body.token);
+    if (!r) { await failRate(key, 10, 30); throw new HttpError(400, 'Este link não é válido ou já expirou. Peça um novo em "Esqueci minha senha".'); }
+    const a = (await sql.unsafe('SELECT email FROM saas.admins WHERE id=$1', [r.admin_id]))[0];
+    return { ok: true, email: a?.email };
+  }, { public: true });
+  route('POST', '/api/admin/password/reset', async (ctx) => {
+    const key = `admin-reset|${ctx.ip}`; await checkRate(key);
+    const r = await adminResetTicket(ctx.body.token);
+    if (!r) { await failRate(key, 10, 30); throw new HttpError(400, 'Este link não é válido ou já expirou. Peça um novo em "Esqueci minha senha".'); }
+    const pw = String(ctx.body.password || '');
+    validatePassword(pw);
+    if (pw.length < 12) throw new HttpError(400, 'Para o administrador da plataforma, use uma senha com pelo menos 12 caracteres');
+    const claimed = await sql.unsafe('UPDATE saas.admin_password_resets SET used_at=now() WHERE token_hash=$1 AND used_at IS NULL RETURNING admin_id', [r.token_hash]);
+    if (!claimed.length) throw new HttpError(400, 'Este link já foi usado.');
+    const a = (await sql.unsafe('UPDATE saas.admins SET password_hash=$2 WHERE id=$1 AND active RETURNING id, name, email', [r.admin_id, hashPassword(pw)]))[0];
+    if (!a) throw new HttpError(400, 'Esta conta de administrador está desativada.');
+    await sql.unsafe('DELETE FROM saas.admin_sessions WHERE admin_id=$1', [a.id]);
+    await sql.unsafe("DELETE FROM saas.login_attempts WHERE key LIKE 'admin|%|' || $1", [a.email]);
+    ctx.admin = a; await log(ctx, 'redefiniu_senha_admin', a.email);
+    try { await notify.sendTemplate('admin_senha_alterada', { to: a.email, url: `${APP_BASE()}/admin`, vars: { nome: a.name } }); }
+    catch (e) { console.error('Admin: aviso de senha alterada não enviado', e.message); }
+    return { ok: true };
+  }, { public: true });
+
+  // ---------- Verificação em duas etapas (app autenticador) ----------
+  const needPassword = async (ctx) => {
+    const a = (await sql.unsafe('SELECT * FROM saas.admins WHERE id=$1', [ctx.admin.id]))[0];
+    const key = `admin-pw|${ctx.admin.id}`; await checkRate(key);
+    if (!checkPassword(String(ctx.body.password || ''), a.password_hash)) { await failRate(key, 5, 30); throw new HttpError(400, 'Senha incorreta'); }
+    await clearRate(key);
+    return a;
+  };
+  adminRoute('GET', '/api/admin/2fa', async (ctx) => {
+    const a = (await sql.unsafe('SELECT totp_enabled, recovery_codes FROM saas.admins WHERE id=$1', [ctx.admin.id]))[0];
+    return { enabled: a.totp_enabled, recovery_left: JSON.parse(a.recovery_codes || '[]').length };
+  });
+  adminRoute('POST', '/api/admin/2fa/setup', async (ctx) => {
+    const a = await needPassword(ctx);
+    if (a.totp_enabled) throw new HttpError(400, 'A verificação em duas etapas já está ativa.');
+    const secret = totp.newSecret();
+    await sql.unsafe('UPDATE saas.admins SET totp_pending_enc=$2 WHERE id=$1', [a.id, sealPlatform(secret)]);
+    return { secret: secret.replace(/(.{4})/g, '$1 ').trim(), otpauth: totp.otpauthUrl(secret, a.email) };
+  });
+  const newCodes = async (id) => {
+    const codes = totp.newRecoveryCodes();
+    await sql.unsafe('UPDATE saas.admins SET recovery_codes=$2 WHERE id=$1', [id, JSON.stringify(codes.map((c) => sha(`rc:${totp.normRecovery(c)}`)))]);
+    return codes;
+  };
+  adminRoute('POST', '/api/admin/2fa/enable', async (ctx) => {
+    const a = (await sql.unsafe('SELECT * FROM saas.admins WHERE id=$1', [ctx.admin.id]))[0];
+    if (a.totp_enabled) throw new HttpError(400, 'A verificação em duas etapas já está ativa.');
+    if (!a.totp_pending_enc) throw new HttpError(400, 'Comece pelo passo "Ativar".');
+    const secret = openPlatform(a.totp_pending_enc);
+    const step = totp.verify(secret, ctx.body.code);
+    if (step === null) throw new HttpError(400, 'Código incorreto. Confira se o relógio do celular está certo e digite o código que aparece agora.');
+    await sql.unsafe('UPDATE saas.admins SET totp_secret_enc=$2, totp_pending_enc=NULL, totp_enabled=true, totp_last_step=$3 WHERE id=$1', [a.id, sealPlatform(secret), step]);
+    const codes = await newCodes(a.id);
+    // encerra as outras sessões deste administrador (a atual continua)
+    const cur = sha(parseCookies(ctx.req).fisio_adm || '');
+    await sql.unsafe('DELETE FROM saas.admin_sessions WHERE admin_id=$1 AND token_hash<>$2', [a.id, cur]);
+    await log(ctx, 'ativou_2fa');
+    return { ok: true, recovery_codes: codes };
+  });
+  adminRoute('POST', '/api/admin/2fa/disable', async (ctx) => {
+    const a = await needPassword(ctx);
+    if (!a.totp_enabled) throw new HttpError(400, 'A verificação em duas etapas não está ativa.');
+    if (totp.verify(openPlatform(a.totp_secret_enc), ctx.body.code, { lastStep: Number(a.totp_last_step) }) === null) throw new HttpError(400, 'Código do app incorreto');
+    await sql.unsafe('UPDATE saas.admins SET totp_secret_enc=NULL, totp_pending_enc=NULL, totp_enabled=false, totp_last_step=0, recovery_codes=NULL WHERE id=$1', [a.id]);
+    await log(ctx, 'desativou_2fa');
+    return { ok: true };
+  });
+  adminRoute('POST', '/api/admin/2fa/recovery', async (ctx) => {
+    const a = await needPassword(ctx);
+    if (!a.totp_enabled) throw new HttpError(400, 'Ative a verificação em duas etapas primeiro.');
+    const codes = await newCodes(a.id);
+    await log(ctx, 'gerou_codigos_recuperacao');
+    return { recovery_codes: codes };
+  });
 
   adminRoute('POST', '/api/admin/logout', async (ctx) => {
     const token = parseCookies(ctx.req).fisio_adm;
@@ -393,7 +557,7 @@ module.exports = function registerAdmin(deps) {
   });
 
   // ---------- Administradores da plataforma ----------
-  adminRoute('GET', '/api/admin/admins', async () => sql.unsafe('SELECT id, name, email, active, created_at, last_login FROM saas.admins ORDER BY name'));
+  adminRoute('GET', '/api/admin/admins', async () => sql.unsafe('SELECT id, name, email, active, created_at, last_login, totp_enabled FROM saas.admins ORDER BY name'));
   adminRoute('POST', '/api/admin/admins', async (ctx) => {
     const b = ctx.body; const name = String(b.name || '').trim().slice(0, 120); const email = String(b.email || '').trim().toLowerCase();
     if (!name) throw new HttpError(400, 'Nome é obrigatório');
@@ -413,6 +577,12 @@ module.exports = function registerAdmin(deps) {
       if (id === ctx.admin.id && !b.active) throw new HttpError(400, 'Você não pode desativar o seu próprio acesso');
       await sql.unsafe('UPDATE saas.admins SET active=$2 WHERE id=$1', [id, !!b.active]);
       if (!b.active) await sql.unsafe('DELETE FROM saas.admin_sessions WHERE admin_id=$1', [id]);
+    }
+    if (b.reset_2fa) {
+      if (id === ctx.admin.id) throw new HttpError(400, 'Para desligar a sua própria verificação em duas etapas, use "Minha segurança".');
+      await sql.unsafe('UPDATE saas.admins SET totp_secret_enc=NULL, totp_pending_enc=NULL, totp_enabled=false, totp_last_step=0, recovery_codes=NULL WHERE id=$1', [id]);
+      await sql.unsafe('DELETE FROM saas.admin_sessions WHERE admin_id=$1', [id]);
+      await log(ctx, 'zerou_2fa_de_admin', a.email);
     }
     if (b.password) {
       validatePassword(b.password);

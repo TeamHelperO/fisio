@@ -3,6 +3,7 @@
 import { h, icon, toast, $, loading, modal, buildForm, empty, money, fmtDate, fmtDT, confirmDialog, csvCell, downloadFile } from './ui.js';
 import { get, post, put, del } from './api.js';
 import { barChart } from './charts.js';
+import { qrSvg } from './qr.js';
 
 const root = $('#root');
 let me = null; let shell = null;
@@ -44,12 +45,86 @@ function loginScreen() {
   const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Entrar');
   authBox(h('form', { class: 'auth-box stack', onsubmit: async (e) => {
     e.preventDefault(); btn.disabled = true;
-    try { await post(A('/login'), { email: email.value, password: pw.value }); await boot(); } catch (err) { toast(err.message, 'error'); btn.disabled = false; pw.select(); }
+    try {
+      const r = await post(A('/login'), { email: email.value, password: pw.value });
+      if (r.needs2fa) return twoFactorScreen(r.ticket);
+      await boot();
+    } catch (err) { toast(err.message, 'error'); btn.disabled = false; pw.select(); }
   } }, h('div', null, h('h2', null, 'Administração'), h('p', null, 'Entre com a sua conta de administrador da plataforma.')),
   h('label', { class: 'field' }, h('span', null, 'E-mail'), email), h('label', { class: 'field' }, h('span', null, 'Senha'), pw), btn,
+  h('p', { class: 'auth-switch', style: { marginTop: '10px' } }, h('a', { href: '#/esqueci-senha', onclick: (e) => { e.preventDefault(); forgotScreen(email.value); } }, 'Esqueci minha senha')),
   h('p', { class: 'auth-switch' }, h('a', { href: '/' }, '← Ir para o sistema das clínicas'))));
   setTimeout(() => email.focus(), 50);
 }
+// segunda etapa: código do app autenticador (ou código de recuperação)
+function twoFactorScreen(ticket) {
+  const code = h('input', { class: 'input', inputmode: 'numeric', autocomplete: 'one-time-code', maxLength: 12, style: { fontSize: '22px', letterSpacing: '.2em', textAlign: 'center' } });
+  const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Confirmar');
+  let recovery = false;
+  const label = h('span', null, 'Código de 6 dígitos do app autenticador');
+  const switchLink = h('a', { href: '#', onclick: (e) => {
+    e.preventDefault(); recovery = !recovery;
+    label.textContent = recovery ? 'Código de recuperação (ex.: abcd-efgh)' : 'Código de 6 dígitos do app autenticador';
+    switchLink.textContent = recovery ? 'Usar o app autenticador' : 'Perdi o celular: usar um código de recuperação';
+    code.value = ''; code.inputMode = recovery ? 'text' : 'numeric'; code.style.letterSpacing = recovery ? '.05em' : '.2em'; code.focus();
+  } }, 'Perdi o celular: usar um código de recuperação');
+  authBox(h('form', { class: 'auth-box stack', onsubmit: async (e) => {
+    e.preventDefault(); btn.disabled = true;
+    try {
+      const r = await post(A('/login/2fa'), { ticket, code: code.value });
+      if (r.via === 'codigo_recuperacao') toast(`Código de recuperação usado. Restam ${r.recovery_left}.`, r.recovery_left <= 2 ? 'error' : 'ok');
+      await boot();
+    } catch (err) {
+      toast(err.message, 'error'); btn.disabled = false; code.select();
+      if (/acabou|de novo com e-mail/.test(err.message)) setTimeout(loginScreen, 1200);
+    }
+  } }, h('div', null, h('h2', null, 'Verificação em duas etapas'), h('p', null, 'Abra o app autenticador no celular e digite o código do FisioGestão Admin.')),
+  h('label', { class: 'field' }, label, code), btn,
+  h('p', { class: 'auth-switch' }, switchLink),
+  h('p', { class: 'auth-switch' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); loginScreen(); } }, '← Voltar'))));
+  setTimeout(() => code.focus(), 50);
+}
+
+// esqueci minha senha (administrador)
+function forgotScreen(prefill = '') {
+  const email = h('input', { class: 'input', type: 'email', autocomplete: 'username', value: prefill });
+  const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Enviar link');
+  const box = h('div');
+  authBox(h('form', { class: 'auth-box stack', onsubmit: async (e) => {
+    e.preventDefault(); btn.disabled = true;
+    try { const r = await post(A('/password/forgot'), { email: email.value }); box.replaceChildren(h('div', { class: 'notice info' }, icon('check'), h('span', null, r.message))); btn.hidden = true; email.disabled = true; }
+    catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+  } }, h('div', null, h('h2', null, 'Esqueci minha senha'), h('p', null, 'Informe o e-mail da sua conta de administrador. Enviaremos um link para criar uma nova senha.')),
+  h('label', { class: 'field' }, h('span', null, 'E-mail'), email), btn, box,
+  h('p', { class: 'auth-switch' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); history.replaceState(null, '', '#/'); loginScreen(); } }, '← Voltar para o login'))));
+  setTimeout(() => email.focus(), 50);
+}
+async function resetScreen(token) {
+  history.replaceState(null, '', '#/redefinir-senha');
+  const back = () => { history.replaceState(null, '', '#/'); loginScreen(); };
+  let info;
+  try { info = await post(A('/password/check'), { token }); }
+  catch (err) {
+    authBox(h('div', { class: 'auth-box stack' }, h('div', null, h('h2', null, 'Link inválido')), h('div', { class: 'notice' }, icon('alert'), h('span', null, err.message)),
+      h('button', { class: 'btn primary', onclick: () => forgotScreen() }, 'Pedir um novo link'), h('p', { class: 'auth-switch' }, h('a', { href: '#', onclick: (e) => { e.preventDefault(); back(); } }, '← Voltar para o login'))));
+    return;
+  }
+  const pw = h('input', { class: 'input', type: 'password', autocomplete: 'new-password' }); const pw2 = h('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
+  const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Salvar nova senha');
+  authBox(h('form', { class: 'auth-box stack', onsubmit: async (e) => {
+    e.preventDefault();
+    if (pw.value !== pw2.value) return toast('As duas senhas não são iguais', 'error');
+    btn.disabled = true;
+    try { await post(A('/password/reset'), { token, password: pw.value }); back(); toast('Senha alterada. Entre com a nova senha.'); }
+    catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+  } }, h('div', null, h('h2', null, 'Criar nova senha'), h('p', null, `Administrador: ${info.email}`)),
+  h('input', { type: 'email', autocomplete: 'username', value: info.email || '', hidden: true, readOnly: true }),
+  h('label', { class: 'field' }, h('span', null, 'Nova senha'), pw, h('small', { class: 'help' }, 'Mínimo de 12 caracteres, com letras e números.')),
+  h('label', { class: 'field' }, h('span', null, 'Repita a nova senha'), pw2), btn,
+  h('small', { class: 'help' }, 'Todas as sessões abertas serão encerradas. A verificação em duas etapas, se ativa, continua valendo.')));
+  setTimeout(() => pw.focus(), 50);
+}
+
 function setupScreen(enabled) {
   const f = { token: h('input', { class: 'input', type: 'password', autocomplete: 'off' }), name: h('input', { class: 'input' }), email: h('input', { class: 'input', type: 'email', autocomplete: 'username' }),
     password: h('input', { class: 'input', type: 'password', autocomplete: 'new-password' }), password2: h('input', { class: 'input', type: 'password', autocomplete: 'new-password' }) };
@@ -81,6 +156,8 @@ function buildShell() {
     h('div', { class: 'main' },
       h('header', { class: 'topbar' }, h('button', { class: 'icon-btn', 'aria-label': 'Abrir menu', onclick: () => app.classList.toggle('menu-open') }, icon('menu', 22)), h('b', null, 'Administração')),
       h('div', { class: 'billing-banner admin-banner' }, icon('shield', 16), h('span', null, 'Área da plataforma: dados de conta e assinatura apenas. Prontuários e cadastros de pacientes não são acessíveis aqui.')),
+      me.totp_enabled ? null : h('div', { class: 'billing-banner warn' }, icon('alert', 16), h('span', null, h('b', null, 'Proteja sua conta: '), 'ative a verificação em duas etapas. Mesmo que alguém descubra sua senha, não consegue entrar sem o código do seu celular.'),
+        h('a', { class: 'btn sm', href: '#/admins' }, 'Ativar agora')),
       content));
   root.replaceChildren(app);
   shell = { nav, content };
@@ -318,6 +395,7 @@ async function emails(view) {
   view.append(head('E-mails', 'Conexão com o servidor de e-mail, os textos dos e-mails e o histórico de envios'), connectionCard(mail, false),
     groupTable('Ciclo do cliente', 'Enviados automaticamente para os administradores de cada clínica — uma única vez por situação. Os avisos de teste grátis e as boas-vindas saem na rotina diária (todo dia de manhã); os de assinatura saem assim que o pagamento muda.'),
     groupTable('Conta e acesso', 'E-mails essenciais de cadastro e senha: podem ter o texto alterado, mas não podem ser desligados.'),
+    groupTable('Administradores da plataforma', 'Enviados aos administradores deste painel (/admin).'),
     card('Histórico de envios', logRows.length ? table(['Data', 'E-mail', 'Para', 'Clínica', 'Situação'], logRows.map((r) => h('tr', null,
       h('td', { class: 'nowrap' }, fmtTs(r.created_at)), h('td', null, NAMES[r.template] || r.template), h('td', null, r.recipient), h('td', null, r.clinic || '—'),
       h('td', null, pill(...(ST[r.status] || ['gray', r.status])), r.error ? h('div', null, h('small', { class: 'muted' }, r.error)) : null))))
@@ -405,6 +483,69 @@ async function apis(view) {
 }
 
 // ---------------- Administradores ----------------
+// ---------- Minha segurança: verificação em duas etapas ----------
+function recoveryBox(codes) {
+  const txt = codes.join('\n');
+  return h('div', { class: 'stack' },
+    h('div', { class: 'notice' }, icon('alert'), h('span', null, h('b', null, 'Guarde estes códigos agora. '), 'Eles não serão mostrados de novo. Cada um funciona uma vez, para entrar se você perder o celular.')),
+    h('div', { class: 'recovery-codes' }, codes.map((c) => h('code', null, c))),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn sm', onclick: async () => { try { await navigator.clipboard.writeText(txt); toast('Códigos copiados'); } catch { toast('Não foi possível copiar', 'error'); } } }, 'Copiar'),
+      h('button', { class: 'btn sm', onclick: () => downloadFile('fisiogestao-admin-codigos-recuperacao.txt', `Códigos de recuperação — FisioGestão Admin (${me.email})\nCada código funciona uma vez.\n\n${txt}\n`) }, 'Baixar .txt')));
+}
+async function securityCard() {
+  const st = await get(A('/2fa'));
+  const askPassword = (title, then) => {
+    const pw = h('input', { class: 'input', type: 'password', autocomplete: 'current-password' });
+    const m = modal({ title, body: h('label', { class: 'field' }, h('span', null, 'Confirme sua senha'), pw),
+      actions: [h('button', { class: 'btn primary', onclick: async () => { try { await then(pw.value, m); } catch (e) { toast(e.message, 'error'); } } }, 'Continuar')] });
+  };
+  const enable = () => askPassword('Ativar verificação em duas etapas', async (password, m0) => {
+    const r = await post(A('/2fa/setup'), { password }); m0.close();
+    const qr = h('div', { class: 'qr-box', html: qrSvg(r.otpauth, 5) });
+    const code = h('input', { class: 'input', inputmode: 'numeric', autocomplete: 'one-time-code', maxLength: 6, style: { fontSize: '20px', letterSpacing: '.2em', textAlign: 'center', maxWidth: '180px' } });
+    const body = h('div', { class: 'stack' },
+      h('ol', { style: { margin: 0, paddingLeft: '18px' } },
+        h('li', null, 'Instale um app autenticador no celular (Google Authenticator, Microsoft Authenticator, Authy ou outro).'),
+        h('li', null, 'No app, toque em "+" e escaneie o QR Code abaixo.'),
+        h('li', null, 'Digite o código de 6 dígitos que aparecer no app.')),
+      qr,
+      h('small', { class: 'help' }, 'Não consegue escanear? Digite esta chave no app: ', h('code', null, r.secret)),
+      h('label', { class: 'field' }, h('span', null, 'Código do app'), code));
+    const m = modal({ title: 'Ativar verificação em duas etapas', body, actions: [h('button', { class: 'btn primary', onclick: async () => {
+      try {
+        const out = await post(A('/2fa/enable'), { code: code.value });
+        m.close(); me.totp_enabled = true; shell = null;
+        const m2 = modal({ title: 'Verificação em duas etapas ativada', body: recoveryBox(out.recovery_codes),
+          actions: [h('button', { class: 'btn primary', onclick: () => { m2.close(); refresh(); } }, 'Já guardei os códigos')] });
+      } catch (e) { toast(e.message, 'error'); code.select(); }
+    } }, 'Ativar')] });
+    setTimeout(() => code.focus(), 100);
+  });
+  const disable = () => {
+    const pw = h('input', { class: 'input', type: 'password', autocomplete: 'current-password' });
+    const code = h('input', { class: 'input', inputmode: 'numeric', maxLength: 6 });
+    const m = modal({ title: 'Desativar verificação em duas etapas', body: h('div', { class: 'stack' },
+      h('div', { class: 'notice' }, icon('alert'), 'Sem as duas etapas, quem descobrir sua senha consegue entrar no painel.'),
+      h('label', { class: 'field' }, h('span', null, 'Sua senha'), pw), h('label', { class: 'field' }, h('span', null, 'Código atual do app'), code)),
+    actions: [h('button', { class: 'btn danger', onclick: async () => {
+      try { await post(A('/2fa/disable'), { password: pw.value, code: code.value }); m.close(); me.totp_enabled = false; shell = null; toast('Verificação em duas etapas desativada'); refresh(); } catch (e) { toast(e.message, 'error'); }
+    } }, 'Desativar')] });
+  };
+  const regen = () => askPassword('Gerar novos códigos de recuperação', async (password, m0) => {
+    const r = await post(A('/2fa/recovery'), { password }); m0.close();
+    const m = modal({ title: 'Novos códigos de recuperação', body: h('div', { class: 'stack' }, h('small', { class: 'help' }, 'Os códigos anteriores deixaram de valer.'), recoveryBox(r.recovery_codes)),
+      actions: [h('button', { class: 'btn primary', onclick: () => { m.close(); refresh(); } }, 'Já guardei os códigos')] });
+  });
+  return card('Minha segurança', h('div', { class: 'card-body stack' },
+    h('p', { style: { margin: 0 } }, h('b', null, 'Verificação em duas etapas: '), st.enabled ? pill('green', 'Ativa') : pill('amber', 'Desativada'),
+      st.enabled ? h('small', { class: 'muted' }, `  ·  ${st.recovery_left} código(s) de recuperação restante(s)`) : null),
+    h('small', { class: 'help' }, 'Ao entrar, além da senha, o painel pede um código que muda a cada 30 segundos no app autenticador do seu celular.'),
+    h('div', { class: 'row' }, st.enabled
+      ? [h('button', { class: 'btn', onclick: regen }, 'Gerar novos códigos de recuperação'), h('button', { class: 'btn ghost', onclick: disable }, 'Desativar')]
+      : h('button', { class: 'btn primary', onclick: enable }, icon('shield', 15), 'Ativar verificação em duas etapas'))));
+}
+
 async function admins(view) {
   const list = await get(A('/admins'));
   const add = () => {
@@ -421,10 +562,14 @@ async function admins(view) {
     } }, 'Salvar')] });
   };
   view.append(head('Administradores', 'Quem pode acessar esta área', h('div', { class: 'row' }, h('button', { class: 'btn', onclick: changePw }, 'Alterar minha senha'), h('button', { class: 'btn primary', onclick: add }, icon('plus', 15), 'Novo administrador'))),
-    card('Administradores da plataforma', table(['Nome', 'E-mail', 'Criado', 'Último acesso', 'Situação', ''], list.map((a) => h('tr', null,
+    await securityCard(),
+    card('Administradores da plataforma', table(['Nome', 'E-mail', 'Criado', 'Último acesso', 'Duas etapas', 'Situação', ''], list.map((a) => h('tr', null,
       h('td', null, h('b', null, a.name), a.id === me.id ? h('div', null, h('small', null, 'você')) : null), h('td', null, a.email), h('td', { class: 'nowrap' }, fmtDay(a.created_at)),
-      h('td', { class: 'nowrap' }, fmtTs(a.last_login)), h('td', null, a.active ? pill('green', 'Ativo') : pill('gray', 'Inativo')),
-      h('td', { class: 'actions' }, a.id !== me.id ? h('button', { class: 'btn sm', onclick: async () => {
+      h('td', { class: 'nowrap' }, fmtTs(a.last_login)), h('td', null, a.totp_enabled ? pill('green', 'Ativa') : pill('amber', 'Não')), h('td', null, a.active ? pill('green', 'Ativo') : pill('gray', 'Inativo')),
+      h('td', { class: 'actions' }, a.id !== me.id && a.totp_enabled ? h('button', { class: 'btn sm ghost', title: 'Para quando o administrador perdeu o celular e os códigos', onclick: async () => {
+        if (!(await confirmDialog(`Desligar a verificação em duas etapas de ${a.name}? Use só se ele perdeu o celular e os códigos de recuperação. Ele poderá entrar só com a senha e deverá ativar de novo.`, { danger: true, okLabel: 'Desligar' }))) return;
+        try { await put(A(`/admins/${a.id}`), { reset_2fa: true }); toast('Verificação em duas etapas desligada'); refresh(); } catch (e) { toast(e.message, 'error'); }
+      } }, 'Zerar 2 etapas') : null, a.id !== me.id ? h('button', { class: 'btn sm', onclick: async () => {
         if (a.active && !(await confirmDialog(`Desativar o acesso de ${a.name}?`, { danger: true, okLabel: 'Desativar' }))) return;
         try { await put(A(`/admins/${a.id}`), { active: !a.active }); refresh(); } catch (e) { toast(e.message, 'error'); }
       } }, a.active ? 'Desativar' : 'Reativar') : null))))));
@@ -434,7 +579,8 @@ async function admins(view) {
 async function auditoria(view) {
   const list = await get(A('/audit'));
   const ACT = { login: 'Entrou', login_falhou: 'Login recusado', criou_admin_inicial: 'Criou o administrador inicial', criou_admin: 'Criou administrador', alterou_admin: 'Alterou administrador',
-    alterou_clinica: 'Alterou clínica', alterou_config: 'Alterou configuração', removeu_config: 'Removeu configuração', exportou_marketing: 'Exportou contatos de marketing' };
+    alterou_clinica: 'Alterou clínica', login_2fa_falhou: 'Código de duas etapas errado', ativou_2fa: 'Ativou duas etapas', desativou_2fa: 'Desativou duas etapas',
+    gerou_codigos_recuperacao: 'Gerou códigos de recuperação', zerou_2fa_de_admin: 'Zerou duas etapas de outro admin', pediu_nova_senha_admin: 'Pediu nova senha', redefiniu_senha_admin: 'Redefiniu a senha', alterou_config: 'Alterou configuração', removeu_config: 'Removeu configuração', exportou_marketing: 'Exportou contatos de marketing' };
   view.append(head('Registro de ações', 'Últimas 500 ações na área administrativa'),
     card('Ações', list.length ? table(['Data/hora', 'Administrador', 'Ação', 'Alvo', 'Detalhes', 'IP'], list.map((l) => h('tr', null,
       h('td', { class: 'nowrap' }, fmtTs(l.ts)), h('td', null, l.admin_name || '—'), h('td', null, ACT[l.action] || l.action), h('td', null, l.target || '—'),
@@ -443,6 +589,9 @@ async function auditoria(view) {
 
 // ---------------- Início ----------------
 async function boot() {
+  const route = location.hash.replace(/^#\/?/, '');
+  if (route.startsWith('redefinir-senha?')) { const t = new URLSearchParams(route.split('?')[1]).get('t'); if (t) return resetScreen(t); }
+  if (route === 'esqueci-senha') return forgotScreen();
   try {
     const st = await get(A('/status'));
     if (st.admin) { me = st.admin; shell = null; router(); return; }
