@@ -124,6 +124,11 @@ async function load(key) {
   const d = DEFAULTS[key];
   if (!d) throw new Error(`Modelo de e-mail desconhecido: ${key}`);
   const row = (await currentSql().unsafe('SELECT * FROM saas.email_templates WHERE key=$1', [key]))[0];
+  return merge(key, row);
+}
+// junta o texto padrão com o que foi salvo no painel (row pode não existir)
+function merge(key, row) {
+  const d = DEFAULTS[key];
   return { ...d, key, subject: row?.subject ?? d.subject, body: row?.body ?? d.body, button: row?.button ?? d.button,
     enabled: d.optional ? (row ? row.enabled !== false : true) : true,
     customized: !!row && (row.subject !== d.subject || row.body !== d.body || row.button !== d.button), updated_at: row?.updated_at || null, updated_by: row?.updated_by || null };
@@ -151,11 +156,13 @@ async function render(key, vars, url) {
   return compose(await load(key), vars, url);
 }
 async function list() {
-  return Promise.all(Object.keys(DEFAULTS).map(async (k) => {
-    const t = await load(k);
+  // uma consulta só (várias consultas simultâneas na mesma conexão travam o pooler do Supabase)
+  const rows = Object.fromEntries((await currentSql().unsafe('SELECT * FROM saas.email_templates')).map((r) => [r.key, r]));
+  return Object.keys(DEFAULTS).map((k) => {
+    const t = merge(k, rows[k]);
     return { key: k, group: t.group, optional: !!t.optional, enabled: t.enabled, name: t.name, when: t.when, vars: t.vars, link: t.link, subject: t.subject, body: t.body, button: t.button,
       customized: t.customized, updated_at: t.updated_at, updated_by: t.updated_by };
-  }));
+  });
 }
 async function save(key, t, by) {
   if (!DEFAULTS[key]) throw Object.assign(new Error('Modelo desconhecido'), { status: 404 });

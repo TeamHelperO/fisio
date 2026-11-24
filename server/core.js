@@ -24,6 +24,7 @@ const LOCAL_DB = /@(localhost|127\.0\.0\.1)[:/]/.test(DATABASE_URL);
 const sqlReady = import('postgres').then(({ default: postgres }) => postgres(DATABASE_URL, {
   max: Number(process.env.PG_POOL_MAX || 3),
   prepare: false, // compatível com o pooler do Supabase em modo transação (porta 6543)
+  max_pipeline: 1, // uma consulta por vez em cada conexão: o pooler em modo transação trava com consultas "empilhadas"
   ssl: LOCAL_DB || process.env.PG_SSL === '0' ? false : 'require',
   idle_timeout: 20,
   connect_timeout: 15,
