@@ -102,6 +102,22 @@ const DEFAULTS = {
     body: 'Olá, {{nome}}!\n\n{{paciente}} assinou o documento "{{documento}}" em {{data}}.\n\nO comprovante com a assinatura e os dados de verificação está na ficha do paciente, aba LGPD.',
     button: 'Ver na ficha do paciente',
   },
+  pagamento_link: {
+    group: 'Pagamentos pelo app', optional: true, name: 'Link de pagamento (para o paciente)',
+    when: 'Enviado ao paciente quando a clínica manda o link do Mercado Pago por e-mail.',
+    vars: { nome: 'Nome do paciente', clinica: 'Nome da clínica', descricao: 'Descrição da cobrança', valor: 'Valor (ex.: R$ 150,00)', validade: 'Validade do link' }, link: true,
+    subject: 'Pagamento — {{clinica}}',
+    body: 'Olá, {{nome}}!\n\nSegue o link para pagar "{{descricao}}", no valor de {{valor}}, com Pix ou cartão pelo Mercado Pago.\n\nO link vale por {{validade}}. Assim que o pagamento for aprovado, a clínica recebe a confirmação automaticamente.',
+    button: 'Pagar agora',
+  },
+  pagamento_recebido: {
+    group: 'Pagamentos pelo app', optional: true, name: 'Pagamento recebido (para a clínica)',
+    when: 'Enviado a quem gerou a cobrança (ou aos administradores da clínica) quando o paciente paga pelo link.',
+    vars: { nome: 'Nome de quem recebe o aviso', paciente: 'Nome do paciente', descricao: 'Descrição da cobrança', valor: 'Valor pago', forma: 'Forma de pagamento' }, link: true,
+    subject: 'Pagamento recebido: {{paciente}} — {{valor}}',
+    body: 'Olá, {{nome}}!\n\n{{paciente}} pagou {{valor}} por {{forma}} referente a "{{descricao}}".\n\nO lançamento já está como pago no Financeiro, com o recibo.',
+    button: 'Abrir o Financeiro',
+  },
   boas_vindas: {
     group: 'Ciclo do cliente', optional: true, name: 'Boas-vindas com primeiros passos',
     when: 'Enviado uma vez, cerca de 1 hora depois do cadastro da clínica.',

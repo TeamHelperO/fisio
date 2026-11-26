@@ -6,6 +6,7 @@ const { HttpError } = require('./http');
 const config = require('./config');
 
 const API = process.env.MP_API_BASE || 'https://api.mercadopago.com'; // MP_API_BASE só para testes locais
+const AUTH = process.env.MP_AUTH_BASE || 'https://auth.mercadopago.com.br';
 
 // Valor mensal em reais, aceitando "79,90" ou "79.90"
 function price() {
@@ -55,4 +56,25 @@ function verifyWebhook(headers, dataId, toleranceSec = 600) {
 // Situação do Mercado Pago → situação interna (a mesma usada para o Stripe)
 const STATUS = { authorized: 'active', paused: 'paused', cancelled: 'canceled', pending: null };
 
-module.exports = { enabled, price, request, verifyWebhook, STATUS };
+// Chamada à API com o token de uma clínica conectada (recebimentos pelo app)
+async function sellerRequest(token, method, path, body) {
+  const headers = { Authorization: `Bearer ${token}` };
+  if (body) { headers['Content-Type'] = 'application/json'; headers['X-Idempotency-Key'] = crypto.randomUUID(); }
+  const res = await fetch(API + path, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error('Mercado Pago (clínica)', method, path.split('?')[0], res.status, data.message || data.error);
+    if (res.status === 401) throw new HttpError(502, 'A conexão com o Mercado Pago da clínica expirou. Conecte a conta de novo em Configurações → Recebimentos.');
+    throw new HttpError(502, 'Não foi possível falar com o Mercado Pago. Tente novamente em instantes.');
+  }
+  return data;
+}
+// Troca do código de autorização (ou do refresh_token) pelo token de acesso da clínica
+async function oauthToken(params) {
+  const res = await fetch(API + '/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(params), signal: AbortSignal.timeout(20000) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { console.error('Mercado Pago OAuth', res.status, data.message || data.error); throw new Error(data.message || 'Falha na autorização do Mercado Pago'); }
+  return data;
+}
+
+module.exports = { enabled, price, request, verifyWebhook, STATUS, sellerRequest, oauthToken, AUTH };

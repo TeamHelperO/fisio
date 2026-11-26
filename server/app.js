@@ -2,7 +2,7 @@
 // API do FisioGestão (SaaS multi-clínica). Exporta `handler(req, res)`, usado pela Vercel (api/index.js)
 // e pelo servidor local de desenvolvimento (server/server.js).
 const crypto = require('crypto');
-const { q, tx, sql, currentSql, als, encrypt, decrypt, nowParts, TIMEZONES, signToken, ensureCore, withClinic, getClinic, createClinic, dropClinic } = require('./core');
+const { q, tx, sql, currentSql, als, encrypt, decrypt, nowParts, TIMEZONES, signToken, ensureCore, withClinic, getClinic, createClinic, dropClinic, sealPlatform, openPlatform } = require('./core');
 const { HttpError, route, match, readBody, parseCookies, send, SECURITY_HEADERS } = require('./http');
 const stripe = require('./stripe');
 const mp = require('./mercadopago');
@@ -829,9 +829,10 @@ async function syncCharge(ctx, apptId) {
   }
 }
 // Pagamento informado no agendamento: 'depois' (cobra ao realizar), 'sinal' (50% agora) ou 'pago' (tudo agora)
-const PAY_OPTIONS = ['depois', 'sinal', 'pago'];
+const PAY_OPTIONS = ['depois', 'sinal', 'pago', 'link_sinal', 'link_total'];
+const isLink = (p) => p === 'link_sinal' || p === 'link_total';
 async function applyPayment(ctx, apptId, payment, method) {
-  if (!payment || payment === 'depois') return;
+  if (!payment || payment === 'depois' || isLink(payment)) return;
   const a = await q.get('SELECT * FROM appointments WHERE id=?', apptId);
   if (!(a.price > 0)) throw new HttpError(400, 'Informe o valor do atendimento para registrar o pagamento');
   if (!METHODS.includes(method)) throw new HttpError(400, 'Informe a forma de pagamento');
@@ -855,11 +856,18 @@ async function applyPayment(ctx, apptId, payment, method) {
   await audit(ctx, 'registrou_pagamento', 'charge', Number(r.lastInsertRowid), a.patient_id, { amount: need, method, agendamento: a.id, tipo: payment });
   await syncCharge(ctx, a.id);
 }
+// cria o link do Mercado Pago depois de gravar o agendamento (se o Mercado Pago falhar, a cobrança fica pendente no Financeiro)
+async function withPayLink(ctx, out) {
+  if (!out.link_charge) return out;
+  try { out.pay_link = await payLinkFor(ctx, out.link_charge); } catch (e) { out.pay_link_error = e.message; }
+  return out;
+}
 const paidOf = async (apptId) => Number((await q.get("SELECT COALESCE(SUM(amount),0) t FROM charges WHERE appointment_id=? AND status='pago'", apptId)).t) || 0;
 route('GET', '/api/appointments', async (ctx) => {
   const sp = ctx.query; const s = scope(ctx.user);
   let text = `SELECT a.*, p.name patient_name, p.phone, u.name professional_name, c.status charge_status,
-    (SELECT COALESCE(SUM(x.amount),0) FROM charges x WHERE x.appointment_id=a.id AND x.status='pago') paid_total FROM appointments a JOIN patients p ON p.id=a.patient_id
+    (SELECT COALESCE(SUM(x.amount),0) FROM charges x WHERE x.appointment_id=a.id AND x.status='pago') paid_total,
+    (SELECT x.id FROM charges x WHERE x.appointment_id=a.id AND x.status='pendente' AND x.pay_url IS NOT NULL ORDER BY x.id DESC LIMIT 1) pay_link_charge FROM appointments a JOIN patients p ON p.id=a.patient_id
     LEFT JOIN users u ON u.id=a.professional_id LEFT JOIN charges c ON c.id=a.charge_id WHERE 1=1 ${s.sql}`;
   const params = [...s.params];
   if (sp.get('from')) { text += ' AND a.start >= ?'; params.push(sp.get('from')); }
@@ -876,7 +884,8 @@ route('POST', '/api/appointments', async (ctx) => {
   const repeat = Math.max(1, Math.min(52, Number(ctx.body.repeat_weeks) || 1));
   const payment = oneOf(ctx.body.payment, PAY_OPTIONS, 'Pagamento', 'depois');
   if (payment !== 'depois' && !(a.price > 0)) throw new HttpError(400, 'Informe o valor do atendimento para registrar o pagamento');
-  if (payment !== 'depois' && !METHODS.includes(ctx.body.payment_method)) throw new HttpError(400, 'Informe a forma de pagamento');
+  if (['sinal', 'pago'].includes(payment) && !METHODS.includes(ctx.body.payment_method)) throw new HttpError(400, 'Informe a forma de pagamento');
+  if (isLink(payment) && !(await recvAccount(ctx.clinic.id))) throw new HttpError(400, 'Conecte a conta do Mercado Pago da clínica em Configurações → Recebimentos.');
   const starts = [];
   for (let i = 0; i < repeat; i++) {
     const d = new Date(a.start); d.setDate(d.getDate() + 7 * i);
@@ -892,7 +901,7 @@ route('POST', '/api/appointments', async (ctx) => {
     const more = conflicts.length > 5 ? `\n… e mais ${conflicts.length - 5} conflito(s)` : '';
     throw new HttpError(409, conflicts.slice(0, 5).join('\n') + more);
   }
-  return tx(async () => {
+  const created = await tx(async () => {
     const ids = [];
     for (let i = 0; i < repeat; i++) {
       const r = await q.run('INSERT INTO appointments(patient_id,professional_id,start,duration,kind,status,price,notes) VALUES (?,?,?,?,?,?,?,?)',
@@ -901,8 +910,9 @@ route('POST', '/api/appointments', async (ctx) => {
     }
     await applyPayment(ctx, ids[0], payment, ctx.body.payment_method);
     await audit(ctx, 'criou', 'appointment', ids[0], p.id, { start: a.start, repeticoes: repeat, pagamento: payment });
-    return { ids };
+    return { ids, link_charge: isLink(payment) ? await linkChargeForAppointment(ctx, ids[0], payment) : null };
   });
+  return withPayLink(ctx, created);
 });
 route('PUT', '/api/appointments/:id', async (ctx) => {
   const ex = await q.get('SELECT * FROM appointments WHERE id=?', idParam(ctx.params.id)); if (!ex) throw new HttpError(404, 'Agendamento não encontrado');
@@ -915,15 +925,20 @@ route('PUT', '/api/appointments/:id', async (ctx) => {
   const payment = oneOf(ctx.body.payment, PAY_OPTIONS, 'Pagamento', 'depois');
   const conflict = await overlapCheck(a, ex.id);
   if (conflict && !ctx.body.force) throw new HttpError(409, conflict);
-  return tx(async () => {
+  if (isLink(payment) && !(await recvAccount(ctx.clinic.id))) throw new HttpError(400, 'Conecte a conta do Mercado Pago da clínica em Configurações → Recebimentos.');
+  const updated = await tx(async () => {
     await q.run('UPDATE appointments SET patient_id=?, professional_id=?, start=?, duration=?, kind=?, status=?, price=?, notes=? WHERE id=?',
       pid, a.professional_id, a.start, a.duration, a.kind, a.status, a.price, a.notes, ex.id);
     await syncCharge(ctx, ex.id);
     await applyPayment(ctx, ex.id, payment, ctx.body.payment_method);
     await audit(ctx, 'alterou', 'appointment', ex.id, pid, { status: a.status, start: a.start });
+    // atendimento cancelado: links de pagamento ainda não pagos deixam de valer
+    if (a.status === 'cancelado') await q.run("UPDATE charges SET status='cancelado' WHERE appointment_id=? AND status='pendente' AND pay_url IS NOT NULL", ex.id);
     const paid = await paidOf(ex.id);
-    return { ok: true, paid_total: paid, paid_warning: ['cancelado', 'falta'].includes(a.status) && paid > 0 };
+    return { ok: true, paid_total: paid, paid_warning: ['cancelado', 'falta'].includes(a.status) && paid > 0,
+      link_charge: isLink(payment) && a.status !== 'cancelado' ? await linkChargeForAppointment(ctx, ex.id, payment) : null };
   });
+  return withPayLink(ctx, updated);
 });
 route('DELETE', '/api/appointments/:id', async (ctx) => {
   const ex = await q.get('SELECT * FROM appointments WHERE id=?', idParam(ctx.params.id)); if (!ex) throw new HttpError(404, 'Agendamento não encontrado');
@@ -1873,6 +1888,218 @@ route('POST', '/api/mercadopago/webhook', async (ctx) => {
   return { received: true };
 }, { public: true, webhook: true, raw: true });
 
+// ====================== Recebimentos pelo app (Mercado Pago da clínica) ======================
+// A clínica conecta a própria conta do Mercado Pago (OAuth). Os links de pagamento são criados com o token
+// dela: o dinheiro cai direto na conta da clínica e a taxa da plataforma (opcional) vai para a conta da
+// plataforma (marketplace_fee). A confirmação chega pelo webhook, sempre conferida na API do Mercado Pago.
+const PAY_LINK_DAYS = 7;
+const recvFeePct = () => { const v = Number(String(config.get('MP_PLATFORM_FEE') || '0').replace(',', '.')); return Number.isFinite(v) && v > 0 && v < 100 ? v : 0; };
+const recvAvailable = () => !!(config.get('MP_CLIENT_ID') && config.get('MP_CLIENT_SECRET'));
+const recvRedirect = () => `${APP_URL}/api/mp/oauth/callback`;
+const recvRef = (clinicId, chargeId) => `fg-${clinicId}-${chargeId}`;
+async function recvAccount(clinicId) {
+  return (await currentSql().unsafe('SELECT * FROM saas.clinic_mp_accounts WHERE clinic_id=$1', [clinicId]))[0] || null;
+}
+// token da clínica, renovado quando faltar pouco para vencer (o do Mercado Pago vale 180 dias)
+async function recvToken(clinicId) {
+  const a = await recvAccount(clinicId);
+  if (!a) throw new HttpError(400, 'Conecte a conta do Mercado Pago da clínica em Configurações → Recebimentos.');
+  if (a.expires_at && new Date(a.expires_at).getTime() < Date.now() + 15 * 86400e3 && a.refresh_enc && recvAvailable()) {
+    try {
+      const t = await mp.oauthToken({ client_id: config.get('MP_CLIENT_ID'), client_secret: config.get('MP_CLIENT_SECRET'), grant_type: 'refresh_token', refresh_token: openPlatform(a.refresh_enc) });
+      await currentSql().unsafe('UPDATE saas.clinic_mp_accounts SET access_enc=$2, refresh_enc=$3, expires_at=$4 WHERE clinic_id=$1',
+        [clinicId, sealPlatform(t.access_token), t.refresh_token ? sealPlatform(t.refresh_token) : a.refresh_enc, new Date(Date.now() + (Number(t.expires_in) || 15552000) * 1000).toISOString()]);
+      return t.access_token;
+    } catch (e) { console.error('Mercado Pago: renovação do token falhou', clinicId, e.message); }
+  }
+  return openPlatform(a.access_enc);
+}
+
+route('GET', '/api/recebimentos/mp', async (ctx) => {
+  const a = await recvAccount(ctx.clinic.id);
+  const out = { available: recvAvailable(), connected: !!a, fee_pct: recvFeePct() };
+  if (a && ctx.user.role === 'admin') out.account = { nickname: a.nickname, email: a.email, connected_at: a.connected_at, connected_by: a.connected_by, live_mode: a.live_mode };
+  return out;
+});
+route('POST', '/api/recebimentos/mp/connect', async (ctx) => {
+  requireRole(ctx.user, ['admin']);
+  if (!recvAvailable()) throw new HttpError(503, 'Os recebimentos pelo Mercado Pago ainda não foram configurados na plataforma.');
+  const state = crypto.randomBytes(32).toString('base64url');
+  await q.run('DELETE FROM saas.mp_oauth_states WHERE expires_at < ?', Date.now());
+  await q.run('INSERT INTO saas.mp_oauth_states(state_hash, clinic_id, user_id, expires_at) VALUES (?,?,?,?)', sha(state), ctx.clinic.id, ctx.user.id, Date.now() + 15 * 60e3);
+  const u = new URL(`${mp.AUTH}/authorization`);
+  u.search = new URLSearchParams({ client_id: config.get('MP_CLIENT_ID'), response_type: 'code', platform_id: 'mp', state, redirect_uri: recvRedirect() }).toString();
+  return { url: u.toString() };
+});
+// volta do Mercado Pago depois que a clínica autoriza
+route('GET', '/api/mp/oauth/callback', async (ctx) => {
+  const back = (r) => ({ __redirect: `${APP_URL}/#/configuracoes/recebimentos?mp=${r}` });
+  const state = String(ctx.query.get('state') || ''); const code = String(ctx.query.get('code') || '');
+  if (!/^[A-Za-z0-9_-]{40,60}$/.test(state)) return back('erro');
+  const st = (await sql.unsafe('DELETE FROM saas.mp_oauth_states WHERE state_hash=$1 RETURNING *', [sha(state)]))[0];
+  if (!st || Number(st.expires_at) < Date.now()) return back('expirado');
+  if (!code || ctx.query.get('error')) return back('cancelado');
+  const clinic = await getClinic(st.clinic_id);
+  if (!clinic || clinicAccess(clinic).mode === 'blocked') return back('erro');
+  try {
+    const t = await mp.oauthToken({ client_id: config.get('MP_CLIENT_ID'), client_secret: config.get('MP_CLIENT_SECRET'), grant_type: 'authorization_code', code, redirect_uri: recvRedirect() });
+    if (!t.access_token) throw new Error('sem token');
+    const me = await mp.sellerRequest(t.access_token, 'GET', '/users/me').catch(() => ({}));
+    await withClinic(clinic, async () => {
+      const u = await q.get('SELECT id, name FROM users WHERE id=?', st.user_id);
+      await currentSql().unsafe(`INSERT INTO saas.clinic_mp_accounts(clinic_id, mp_user_id, nickname, email, access_enc, refresh_enc, expires_at, live_mode, connected_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (clinic_id) DO UPDATE SET mp_user_id=excluded.mp_user_id, nickname=excluded.nickname, email=excluded.email,
+        access_enc=excluded.access_enc, refresh_enc=excluded.refresh_enc, expires_at=excluded.expires_at, live_mode=excluded.live_mode, connected_by=excluded.connected_by, connected_at=now()`,
+      [clinic.id, String(t.user_id || me.id || ''), me.nickname || null, me.email || null, sealPlatform(t.access_token), t.refresh_token ? sealPlatform(t.refresh_token) : null,
+        new Date(Date.now() + (Number(t.expires_in) || 15552000) * 1000).toISOString(), t.live_mode !== false, u?.name || null]);
+      ctx.user = u || null;
+      await audit(ctx, 'conectou_mercado_pago', 'clinic', clinic.id, null, { conta: me.nickname || me.email || t.user_id });
+    });
+    return back('ok');
+  } catch (e) {
+    console.error('Mercado Pago: conexão da clínica falhou', e.message);
+    return back('erro');
+  }
+}, { public: true });
+route('POST', '/api/recebimentos/mp/disconnect', async (ctx) => {
+  requireRole(ctx.user, ['admin']);
+  await q.run('DELETE FROM saas.clinic_mp_accounts WHERE clinic_id=?', ctx.clinic.id);
+  await audit(ctx, 'desconectou_mercado_pago', 'clinic', ctx.clinic.id, null, null);
+  return { ok: true };
+});
+
+// cria (ou reaproveita) o link de pagamento de uma cobrança pendente
+async function payLinkFor(ctx, chargeId) {
+  const c = await q.get('SELECT c.*, p.name patient_name, p.email patient_email, p.phone patient_phone FROM charges c JOIN patients p ON p.id=c.patient_id WHERE c.id=?', chargeId);
+  if (!c) throw new HttpError(404, 'Lançamento não encontrado');
+  if (c.status !== 'pendente') throw new HttpError(400, 'Só cobranças pendentes podem receber link de pagamento');
+  const patient = { name: c.patient_name, email: c.patient_email, phone: c.patient_phone };
+  const fresh = c.pay_url && c.pay_amount === c.amount && c.pay_link_at && (Date.now() - new Date(c.pay_link_at).getTime()) < (PAY_LINK_DAYS - 1) * 86400e3;
+  if (fresh) return { charge_id: c.id, url: c.pay_url, amount: c.amount, fee: c.platform_fee || 0, description: c.description, patient };
+  const token = await recvToken(ctx.clinic.id);
+  const fee = Math.round(c.amount * recvFeePct()) / 100;
+  const exp = new Date(Date.now() + PAY_LINK_DAYS * 86400e3);
+  const pref = {
+    items: [{ id: `cobranca-${c.id}`, title: c.description.slice(0, 120), quantity: 1, unit_price: c.amount, currency_id: 'BRL' }],
+    payer: { name: c.patient_name, ...(c.patient_email && EMAIL_RE.test(c.patient_email) ? { email: c.patient_email } : {}) },
+    external_reference: recvRef(ctx.clinic.id, c.id),
+    notification_url: `${APP_URL}/api/mp/recebimentos/webhook/${ctx.clinic.id}`,
+    statement_descriptor: String((await getSettings()).clinic_name || ctx.clinic.name).normalize('NFD').replace(/[^A-Za-z0-9 ]/g, '').slice(0, 22) || undefined,
+    expires: true, expiration_date_to: exp.toISOString(),
+  };
+  if (fee > 0) pref.marketplace_fee = fee;
+  const r = await mp.sellerRequest(token, 'POST', '/checkout/preferences', pref);
+  if (!r.init_point) throw new HttpError(502, 'O Mercado Pago não devolveu o link de pagamento. Tente novamente.');
+  await q.run('UPDATE charges SET pay_url=?, pay_amount=?, mp_preference_id=?, platform_fee=?, pay_link_at=? WHERE id=?', r.init_point, c.amount, r.id || null, fee, new Date().toISOString(), c.id);
+  await audit(ctx, 'gerou_link_pagamento', 'charge', c.id, c.patient_id, { valor: c.amount, taxa_plataforma: fee });
+  return { charge_id: c.id, url: r.init_point, amount: c.amount, fee, description: c.description, patient };
+}
+// cobrança pendente para o link do agendamento (sinal de 50% ou o que falta do total)
+async function linkChargeForAppointment(ctx, apptId, kind) {
+  const a = await q.get('SELECT * FROM appointments WHERE id=?', apptId);
+  if (!(a.price > 0)) throw new HttpError(400, 'Informe o valor do atendimento para enviar o link de pagamento');
+  const ch = a.charge_id ? await q.get('SELECT * FROM charges WHERE id=?', a.charge_id) : null;
+  if (kind === 'link_total' && ch && ch.status === 'pendente') return ch.id; // já realizado: o link é da cobrança do restante
+  const target = kind === 'link_sinal' ? cents(a.price / 2) : a.price;
+  const launched = Number((await q.get("SELECT COALESCE(SUM(amount),0) t FROM charges WHERE appointment_id=? AND status<>'cancelado'", a.id)).t) || 0;
+  const need = cents(target - launched);
+  if (need <= 0) {
+    const open = await q.get("SELECT id FROM charges WHERE appointment_id=? AND status='pendente' ORDER BY id DESC LIMIT 1", a.id);
+    if (open) return open.id;
+    throw new HttpError(400, 'Este valor já foi pago.');
+  }
+  const paidBefore = await paidOf(a.id);
+  const [y, m, d] = a.start.slice(0, 10).split('-');
+  const desc = kind === 'link_sinal' && launched === 0 ? `Sinal (50%) — atendimento de ${d}/${m}/${y}` : paidBefore > 0 ? `Restante do atendimento de ${d}/${m}/${y}` : `Atendimento de fisioterapia — ${d}/${m}/${y}`;
+  const r = await q.run('INSERT INTO charges(patient_id, professional_id, description, amount, due_date, appointment_id, created_by) VALUES (?,?,?,?,?,?,?)',
+    a.patient_id, a.professional_id, desc, need, a.start.slice(0, 10) < today() ? today() : a.start.slice(0, 10), a.id, ctx.user.id);
+  await syncCharge(ctx, a.id);
+  return Number(r.lastInsertRowid);
+}
+route('POST', '/api/charges/:id/pay-link', async (ctx) => {
+  requireRole(ctx.user, FIN_ROLES);
+  const c = await q.get('SELECT patient_id FROM charges WHERE id=?', idParam(ctx.params.id)); if (!c) throw new HttpError(404, 'Lançamento não encontrado');
+  await getPatient(ctx.user, c.patient_id);
+  return payLinkFor(ctx, idParam(ctx.params.id));
+});
+route('POST', '/api/charges/:id/pay-link/email', async (ctx) => {
+  requireRole(ctx.user, FIN_ROLES);
+  const c = await q.get('SELECT c.*, p.name patient_name, p.email patient_email FROM charges c JOIN patients p ON p.id=c.patient_id WHERE c.id=?', idParam(ctx.params.id));
+  if (!c) throw new HttpError(404, 'Lançamento não encontrado');
+  await getPatient(ctx.user, c.patient_id);
+  if (!c.patient_email) throw new HttpError(400, 'O paciente não tem e-mail cadastrado.');
+  const link = await payLinkFor(ctx, c.id);
+  await notify.sendTemplate('pagamento_link', { to: c.patient_email, clinicId: ctx.clinic.id, url: link.url,
+    vars: { nome: c.patient_name, clinica: (await getSettings()).clinic_name || ctx.clinic.name, descricao: c.description, valor: brl(c.amount), validade: `${PAY_LINK_DAYS} dias` } });
+  await audit(ctx, 'enviou_link_pagamento', 'charge', c.id, c.patient_id, { para: c.patient_email });
+  return { ok: true };
+});
+const brl = (v) => `R$ ${Number(v).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.')}`;
+const MP_METHOD = (p) => (p.payment_method_id === 'pix' ? 'pix' : p.payment_type_id === 'credit_card' ? 'cartao_credito' : p.payment_type_id === 'debit_card' ? 'cartao_debito' : 'transferencia');
+// registra um pagamento aprovado no Mercado Pago (já conferido na API) — chamada dentro de withClinic
+async function registerMpPayment(clinic, p) {
+  const m = /^fg-(\d+)-(\d+)$/.exec(String(p.external_reference || ''));
+  if (!m || Number(m[1]) !== clinic.id || p.status !== 'approved') return null;
+  const c = await q.get('SELECT * FROM charges WHERE id=?', Number(m[2]));
+  if (!c) return null;
+  const actx = { user: null, ip: null };
+  if (c.mp_payment_id === String(p.id)) return c; // notificação repetida
+  if (c.status === 'pago') {
+    await audit(actx, 'pagamento_mp_em_dobro', 'charge', c.id, c.patient_id, { pagamento_mp: p.id, valor: p.transaction_amount });
+    return c;
+  }
+  if (Number(p.transaction_amount) + 0.01 < c.amount) {
+    await audit(actx, 'pagamento_mp_valor_diferente', 'charge', c.id, c.patient_id, { pagamento_mp: p.id, valor: p.transaction_amount, esperado: c.amount });
+    return c;
+  }
+  const day = today();
+  await tx(async () => {
+    await q.run("UPDATE charges SET status='pago', paid_at=?, method=?, receipt_number=?, mp_payment_id=? WHERE id=? AND status<>'pago'",
+      day, MP_METHOD(p), await nextReceipt(day), String(p.id), c.id);
+    await audit(actx, 'pagamento_mercado_pago', 'charge', c.id, c.patient_id, { valor: p.transaction_amount, forma: MP_METHOD(p), pagamento_mp: p.id, taxa_plataforma: c.platform_fee || 0 });
+  });
+  // avisa quem gerou a cobrança (ou os administradores)
+  try {
+    const pat = await q.get('SELECT name FROM patients WHERE id=?', c.patient_id);
+    const staff = c.created_by ? await q.all('SELECT name, email FROM users WHERE id=? AND active=1', c.created_by) : [];
+    const to = staff.length ? staff : await q.all("SELECT name, email FROM users WHERE role='admin' AND active=1");
+    for (const u of to) {
+      await notify.sendTemplate('pagamento_recebido', { to: u.email, clinicId: clinic.id, ref: `mp-${p.id}-${u.email}`, url: `${APP_URL}/#/financeiro`,
+        vars: { nome: u.name, paciente: pat?.name || '', descricao: c.description, valor: brl(c.amount), forma: LABEL_METHOD[MP_METHOD(p)] } }).catch(() => {});
+    }
+  } catch (e) { console.error('Pagamento recebido: aviso não enviado', e.message); }
+  return q.get('SELECT * FROM charges WHERE id=?', c.id);
+}
+const LABEL_METHOD = { pix: 'Pix', cartao_credito: 'cartão de crédito', cartao_debito: 'cartão de débito', transferencia: 'saldo/transferência no Mercado Pago' };
+// confere no Mercado Pago se a cobrança já foi paga (não depende só do webhook)
+route('POST', '/api/charges/:id/pay-link/check', async (ctx) => {
+  requireRole(ctx.user, FIN_ROLES);
+  const c = await q.get('SELECT * FROM charges WHERE id=?', idParam(ctx.params.id)); if (!c) throw new HttpError(404, 'Lançamento não encontrado');
+  await getPatient(ctx.user, c.patient_id);
+  if (c.status === 'pago' || !c.pay_url) return { status: c.status };
+  const token = await recvToken(ctx.clinic.id);
+  const r = await mp.sellerRequest(token, 'GET', `/v1/payments/search?${new URLSearchParams({ external_reference: recvRef(ctx.clinic.id, c.id), sort: 'date_created', criteria: 'desc' })}`);
+  for (const p of r.results || []) if (p.status === 'approved') { await registerMpPayment(ctx.clinic, p); break; }
+  return { status: (await q.get('SELECT status FROM charges WHERE id=?', c.id)).status };
+});
+// notificações do Mercado Pago para os pagamentos das clínicas
+route('POST', '/api/mp/recebimentos/webhook/:clinicId', async (ctx) => {
+  let body = {};
+  try { body = JSON.parse(ctx.rawBody?.toString('utf8') || '{}'); } catch { /* corpo vazio */ }
+  const type = body.type || body.topic || ctx.query.get('type') || ctx.query.get('topic');
+  const id = String(body.data?.id || ctx.query.get('data.id') || ctx.query.get('id') || '');
+  if (type !== 'payment' || !/^\d{1,30}$/.test(id)) return { received: true };
+  const clinic = await getClinic(Number(ctx.params.clinicId) || 0);
+  if (!clinic) return { received: true };
+  await withClinic(clinic, async () => {
+    if (!(await recvAccount(clinic.id))) return;
+    // nunca confia no corpo da notificação: busca o pagamento na API com o token da clínica
+    const p = await mp.sellerRequest(await recvToken(clinic.id), 'GET', `/v1/payments/${id}`);
+    await registerMpPayment(clinic, p);
+  });
+  return { received: true };
+}, { public: true, webhook: true, raw: true });
+
 // ====================== Área administrativa da plataforma ======================
 const adminArea = require('./admin')({ hashPassword, checkPassword, validatePassword, sha, DUMMY_HASH, checkRate, failRate, clearRate, clinicAccess, unsubscribeUrl, COOKIE_SECURE, runDaily: () => lifecycle.daily() });
 
@@ -1929,6 +2156,10 @@ async function handler(req, res) {
         Object.defineProperty(ctx, 'clinic', { get: () => als.getStore().clinic, configurable: true });
         return m.route.handler(ctx);
       });
+    }
+    if (out && out.__redirect) {
+      res.writeHead(302, { Location: out.__redirect, 'Cache-Control': 'no-store' });
+      return res.end();
     }
     if (out && out.__html) {
       res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });

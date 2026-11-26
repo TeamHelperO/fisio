@@ -1,6 +1,7 @@
 import { h, icon, toast, buildForm, badge, fmtDate, fmtTime, empty, LABELS, confirmDialog, modal, today, ymd, pad, WEEKDAYS, MONTHS, money } from '../ui.js';
 import { get, post, put, del, qs } from '../api.js';
 import { state, go, isClinical } from '../state.js';
+import { recvStatus, payLinkModal } from './paylink.js';
 
 const START_H = 7; const END_H = 21; const HOUR_PX = 56;
 // situação do pagamento de um atendimento: pago, parcial ou a pagar
@@ -9,13 +10,14 @@ export function payState(a) {
   if (!price && !paid) return null;
   if (paid >= price && paid > 0) return { cls: 'green', label: 'Pago', short: 'Pago' };
   if (paid > 0) return { cls: 'amber', label: `${money(paid)} pago de ${money(price)}`, short: paid * 2 === price ? '50% pago' : 'Parcial' };
+  if (a.pay_link_charge) return { cls: 'blue', label: 'Link de pagamento enviado', short: 'Link enviado' };
   return { cls: 'gray', label: 'A pagar', short: 'A pagar' };
 }
 
 // ======================= Modal de agendamento =======================
 export async function appointmentModal(appt = {}, onSaved = () => {}) {
   const isNew = !appt.id;
-  const [patients, services] = await Promise.all([get('/patients'), get('/services')]);
+  const [patients, services, recv] = await Promise.all([get('/patients'), get('/services'), recvStatus()]);
   const activeServices = services.filter((s) => s.active);
   const def = {
     patient_id: appt.patient_id || '', professional_id: appt.professional_id || (state.user.role !== 'recepcao' ? state.user.id : ''),
@@ -45,8 +47,9 @@ export async function appointmentModal(appt = {}, onSaved = () => {}) {
   const paid = Number(appt.paid_total) || 0;
   const price = () => Number(form.inputs.price.value) || 0;
   const payOpts = paid > 0
-    ? [['depois', 'Restante será pago depois'], ['pago', 'Pagou o restante agora']]
-    : [['depois', 'Vai pagar depois do atendimento'], ['sinal', 'Pagou 50% agora (sinal)'], ['pago', 'Já pagou o valor total']];
+    ? [['depois', 'Restante será pago depois'], ['pago', 'Pagou o restante agora'], ...(recv.connected ? [['link_total', 'Enviar link do Mercado Pago — restante']] : [])]
+    : [['depois', 'Vai pagar depois do atendimento'], ['sinal', 'Pagou 50% agora (sinal)'], ['pago', 'Já pagou o valor total'],
+      ...(recv.connected ? [['link_sinal', 'Enviar link do Mercado Pago — 50% (sinal)'], ['link_total', 'Enviar link do Mercado Pago — valor total']] : [])];
   const paySel = h('select', { class: 'input', name: 'payment' }, payOpts.map(([v, l]) => h('option', { value: v }, l)));
   const methodSel = h('select', { class: 'input', name: 'payment_method' }, h('option', { value: '' }, 'Selecione…'), Object.entries(LABELS.method).map(([v, l]) => h('option', { value: v }, l)));
   const payInfo = h('small', { class: 'help' });
@@ -54,10 +57,12 @@ export async function appointmentModal(appt = {}, onSaved = () => {}) {
   const payStatus = paid > 0 ? h('div', { class: 'notice info span-all' }, icon('check'), h('span', null, paid >= (Number(appt.price) || 0) ? `Pago: ${money(paid)} (valor total).` : `Já pago: ${money(paid)} de ${money(appt.price)}. Falta ${money((Number(appt.price) || 0) - paid)}.`)) : null;
   const updPay = () => {
     const v = paySel.value; const pr = price();
-    methodField.style.display = v === 'depois' ? 'none' : '';
+    methodField.style.display = ['sinal', 'pago'].includes(v) ? '' : 'none';
+    const half = Math.round(pr * 50) / 100;
     payInfo.textContent = v === 'depois' ? (paid > 0 ? 'O restante vira cobrança ao marcar como "Realizado".' : 'A cobrança é gerada ao marcar como "Realizado".')
       : v === 'sinal' ? `Registra agora ${money(Math.round(pr * 50) / 100)} pago, com recibo. O restante (${money(pr - Math.round(pr * 50) / 100)}) vira cobrança ao realizar o atendimento.`
-      : `Registra agora ${money(Math.max(0, pr - paid))} pago, com recibo. Nada fica para cobrar depois.`;
+      : v === 'pago' ? `Registra agora ${money(Math.max(0, pr - paid))} pago, com recibo. Nada fica para cobrar depois.`
+      : `Gera um link de ${money(v === 'link_sinal' ? half : Math.max(0, pr - paid))} para o paciente pagar com Pix ou cartão. Quando ele pagar, fica registrado sozinho, com recibo.${recv.fee_pct ? '' : ''}`;
     if (isNew && Number(form.inputs.repeat_weeks?.value) > 1 && v !== 'depois') payInfo.textContent += ' Vale só para o primeiro atendimento da série.';
   };
   paySel.addEventListener('change', updPay); form.inputs.price.addEventListener('input', updPay); form.inputs.repeat_weeks?.addEventListener('change', updPay);
@@ -76,11 +81,13 @@ export async function appointmentModal(appt = {}, onSaved = () => {}) {
     const v = { ...form.getValues(), ...extra };
     const payment = fullyPaid ? 'depois' : paySel.value;
     if (payment !== 'depois' && !(Number(v.price) > 0)) return toast('Informe o valor do atendimento para registrar o pagamento', 'error');
-    if (payment !== 'depois' && !methodSel.value) return toast('Escolha a forma de pagamento', 'error');
+    if (['sinal', 'pago'].includes(payment) && !methodSel.value) return toast('Escolha a forma de pagamento', 'error');
     const body = { patient_id: v.patient_id, professional_id: v.professional_id, start: `${v.date}T${v.time}`, duration: v.duration, kind: v.kind, status: v.status, price: v.price, notes: v.notes, repeat_weeks: v.repeat_weeks, payment, payment_method: methodSel.value, force };
     try {
       const r = isNew ? await post('/appointments', body) : await put(`/appointments/${appt.id}`, body);
       m.close(); toast(isNew ? (Number(v.repeat_weeks) > 1 ? `${v.repeat_weeks} atendimentos agendados` : 'Atendimento agendado') : 'Agendamento atualizado'); onSaved();
+      if (r?.pay_link) payLinkModal(r.pay_link);
+      if (r?.pay_link_error) toast(`Agendado, mas o link não foi gerado: ${r.pay_link_error} Gere de novo pelo Financeiro.`, 'error');
       if (r?.paid_warning) toast(`Este atendimento tem ${money(r.paid_total)} pago. Se for devolver, faça o estorno no Financeiro.`, 'error');
     } catch (e) {
       if (e.status === 409) { if (await confirmDialog(`${e.message}.\nDeseja agendar mesmo assim?`, { okLabel: 'Agendar mesmo assim' })) save(extra, true); }

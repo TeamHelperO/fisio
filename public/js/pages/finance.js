@@ -1,4 +1,5 @@
 import { h, icon, toast, buildForm, badge, fmtDate, empty, LABELS, confirmDialog, modal, today, ymd, money, MONTHS, downloadFile, debounce, csvCell } from '../ui.js';
+import { recvStatus, requestPayLink } from './paylink.js';
 import { get, post, put, del, qs } from '../api.js';
 import { state, go, openPrint, isClinical } from '../state.js';
 import { barChart } from '../charts.js';
@@ -54,6 +55,7 @@ export function payModal(c) {
 async function chargeActions(c) {
   const items = [];
   if (c.status === 'pendente') items.push(h('button', { class: 'btn sm primary', onclick: (e) => { e.stopPropagation(); payModal(c); } }, 'Receber'));
+  if (c.status === 'pendente' && (await recvStatus()).connected) items.push(h('button', { class: 'btn sm', title: 'Link do Mercado Pago para o paciente pagar com Pix ou cartão', onclick: (e) => { e.stopPropagation(); requestPayLink(c.id); } }, c.pay_url ? 'Link enviado' : 'Link de pagamento'));
   if (c.status === 'pago') items.push(h('button', { class: 'btn sm', title: 'Recibo', onclick: (e) => { e.stopPropagation(); openPrint('recibo', { id: c.id }); } }, icon('receipt', 14), 'Recibo'));
   return items;
 }
@@ -70,6 +72,7 @@ function chargeMenu(c) {
     c.status !== 'pago' && isClinical() ? h('button', { class: 'btn ghost', style: { color: 'var(--danger)' }, onclick: () => confirmDialog('Excluir este lançamento?', { danger: true, okLabel: 'Excluir' }).then((ok) => ok && act(() => del(`/charges/${c.id}`))) }, icon('trash', 15), 'Excluir') : null,
     h('button', { class: 'btn', onclick: () => { close(); chargeModal(c); } }, icon('edit', 15), 'Editar'),
     c.status === 'pago' ? h('button', { class: 'btn', onclick: () => openPrint('recibo', { id: c.id }) }, icon('receipt', 15), 'Recibo') : null,
+    c.status === 'pendente' ? h('button', { class: 'btn', onclick: () => { close(); requestPayLink(c.id); } }, 'Link do Mercado Pago') : null,
     c.status === 'pendente' ? h('button', { class: 'btn primary', onclick: () => { close(); payModal(c); } }, 'Registrar pagamento') : null,
   ] });
 }

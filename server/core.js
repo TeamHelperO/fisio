@@ -326,6 +326,18 @@ CREATE TABLE IF NOT EXISTS saas.signature_links (
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS billing_provider text;
 ALTER TABLE saas.clinics ADD COLUMN IF NOT EXISTS mp_preapproval_id text;
 CREATE UNIQUE INDEX IF NOT EXISTS clinics_mp_preapproval ON saas.clinics(mp_preapproval_id);
+-- Recebimentos pelo app: conta do Mercado Pago de cada clínica (tokens cifrados com a chave da plataforma)
+CREATE TABLE IF NOT EXISTS saas.clinic_mp_accounts (
+  clinic_id integer PRIMARY KEY REFERENCES saas.clinics(id) ON DELETE CASCADE,
+  mp_user_id text NOT NULL, nickname text, email text,
+  access_enc text NOT NULL, refresh_enc text, expires_at timestamptz, live_mode boolean,
+  connected_by text, connected_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS saas.mp_oauth_states (
+  state_hash text PRIMARY KEY,
+  clinic_id integer NOT NULL REFERENCES saas.clinics(id) ON DELETE CASCADE,
+  user_id integer NOT NULL, expires_at bigint NOT NULL
+);
 `;
 
 // Tabelas de cada clínica. Datas ficam como texto (YYYY-MM-DD / YYYY-MM-DDTHH:MM) como na versão original.
@@ -485,6 +497,11 @@ CREATE TABLE signature_requests (
   doc_hash text NOT NULL, doc_enc text NOT NULL, signature_enc text, consent_id integer
 );
 CREATE INDEX signature_requests_patient ON signature_requests(patient_id);
+`,
+  // v5 — Link de pagamento do Mercado Pago nas cobranças
+  `
+ALTER TABLE charges ADD COLUMN pay_url text, ADD COLUMN pay_amount double precision, ADD COLUMN mp_preference_id text,
+  ADD COLUMN mp_payment_id text, ADD COLUMN platform_fee double precision, ADD COLUMN pay_link_at text;
 `,
 ];
 
