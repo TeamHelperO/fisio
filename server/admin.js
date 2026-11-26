@@ -439,6 +439,39 @@ module.exports = function registerAdmin(deps) {
     return out;
   });
 
+  // ---------- Recebimentos das clínicas pelo Mercado Pago (taxas da plataforma) ----------
+  // completa o registro central com pagamentos feitos antes dele existir (lidos das clínicas conectadas)
+  async function backfillReceipts() {
+    const { q } = require('./core');
+    const list = await sql.unsafe(`SELECT c.id FROM saas.clinic_mp_accounts a JOIN saas.clinics c ON c.id=a.clinic_id
+      WHERE NOT EXISTS (SELECT 1 FROM saas.platform_config WHERE key='_mp_receipts_backfill_' || c.id)`);
+    for (const { id } of list) {
+      const clinic = await getClinic(id); if (!clinic) continue;
+      const rows = await withClinic(clinic, () => q.all("SELECT id, amount, platform_fee, method, paid_at, mp_payment_id FROM charges WHERE mp_payment_id IS NOT NULL AND status='pago'"));
+      for (const r of rows) {
+        await sql.unsafe(`INSERT INTO saas.mp_receipts(mp_payment_id, clinic_id, charge_id, amount, platform_fee, method, approved_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7::timestamptz) ON CONFLICT (mp_payment_id) DO NOTHING`, [r.mp_payment_id, id, r.id, r.amount, r.platform_fee || 0, r.method, `${r.paid_at}T12:00:00-03:00`]);
+      }
+      await sql.unsafe("INSERT INTO saas.platform_config(key, value_enc, updated_by) VALUES ($1, $2, 'sistema') ON CONFLICT (key) DO NOTHING", ['_mp_receipts_backfill_' + id, sealPlatform('1')]);
+    }
+  }
+  adminRoute('GET', '/api/admin/receivables', async (ctx) => {
+    await backfillReceipts();
+    const months = Math.max(1, Math.min(60, Number(ctx.query.get('months')) || 12));
+    const since = `now() - interval '${months} months'`;
+    const [tot] = await sql.unsafe(`SELECT COUNT(*)::int n, COALESCE(SUM(amount),0)::float gross, COALESCE(SUM(platform_fee),0)::float fee, COALESCE(SUM(mp_fee),0)::float mp_fee,
+      COUNT(*) FILTER (WHERE mp_fee IS NULL)::int mp_fee_unknown FROM saas.mp_receipts WHERE approved_at >= ${since}`);
+    const byMonth = await sql.unsafe(`SELECT to_char(approved_at AT TIME ZONE 'America/Sao_Paulo','YYYY-MM') AS month, COUNT(*)::int n, SUM(amount)::float gross, SUM(platform_fee)::float fee
+      FROM saas.mp_receipts WHERE approved_at >= ${since} GROUP BY 1 ORDER BY 1`);
+    const byClinic = await sql.unsafe(`SELECT c.id, c.name, COUNT(*)::int n, SUM(r.amount)::float gross, SUM(r.platform_fee)::float fee, MAX(r.approved_at) last
+      FROM saas.mp_receipts r JOIN saas.clinics c ON c.id=r.clinic_id WHERE r.approved_at >= ${since} GROUP BY c.id, c.name ORDER BY fee DESC, gross DESC`);
+    const recent = await sql.unsafe(`SELECT r.mp_payment_id, r.amount::float, r.platform_fee::float fee, r.mp_fee::float, r.method, r.approved_at, c.name clinic
+      FROM saas.mp_receipts r JOIN saas.clinics c ON c.id=r.clinic_id WHERE r.approved_at >= ${since} ORDER BY r.approved_at DESC LIMIT 500`);
+    const accounts = await sql.unsafe(`SELECT c.name clinic, a.nickname, a.email, a.connected_at, a.live_mode FROM saas.clinic_mp_accounts a JOIN saas.clinics c ON c.id=a.clinic_id ORDER BY a.connected_at DESC`);
+    const pct = Number(String(config.get('MP_PLATFORM_FEE') || '0').replace(',', '.')) || 0;
+    return { months, totals: tot, by_month: byMonth, by_clinic: byClinic, recent, accounts, fee_pct: pct, configured: !!(config.get('MP_CLIENT_ID') && config.get('MP_CLIENT_SECRET')) };
+  });
+
   // ---------- Chaves de API e parâmetros ----------
   adminRoute('GET', '/api/admin/config', async () => config.describe());
   adminRoute('PUT', '/api/admin/config', async (ctx) => {

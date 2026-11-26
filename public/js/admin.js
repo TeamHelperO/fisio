@@ -142,7 +142,7 @@ function setupScreen(enabled) {
 }
 
 // ---------------- Layout ----------------
-const NAV = [['dashboard', 'Dashboard', 'dashboard'], ['clinicas', 'Clínicas', 'users'], ['financeiro', 'Financeiro', 'wallet'], ['usuarios', 'Usuários e marketing', 'phone'], ['apis', 'APIs e integrações', 'settings'], ['emails', 'E-mails', 'file'], ['campanhas', 'Campanhas', 'trending'], ['admins', 'Administradores', 'shield'], ['auditoria', 'Registro de ações', 'history']];
+const NAV = [['dashboard', 'Dashboard', 'dashboard'], ['clinicas', 'Clínicas', 'users'], ['financeiro', 'Financeiro', 'wallet'], ['recebimentos', 'Recebimentos e taxas', 'receipt'], ['usuarios', 'Usuários e marketing', 'phone'], ['apis', 'APIs e integrações', 'settings'], ['emails', 'E-mails', 'file'], ['campanhas', 'Campanhas', 'trending'], ['admins', 'Administradores', 'shield'], ['auditoria', 'Registro de ações', 'history']];
 function buildShell() {
   const nav = h('nav', { class: 'nav' }, NAV.map(([p, l, ic]) => h('a', { href: `#/${p}`, 'data-path': p, onclick: () => app.classList.remove('menu-open') }, icon(ic), h('span', { class: 'grow' }, l))));
   const content = h('main', { class: 'content', tabindex: '-1' });
@@ -163,7 +163,7 @@ function buildShell() {
   shell = { nav, content };
 }
 
-const PAGES = { dashboard, clinicas, financeiro, usuarios, apis, emails, campanhas, admins, auditoria };
+const PAGES = { dashboard, clinicas, financeiro, recebimentos, usuarios, apis, emails, campanhas, admins, auditoria };
 let seq = 0;
 async function router() {
   if (!me) return;
@@ -287,6 +287,43 @@ function mpFinance(m) {
     h('td', { class: 'nowrap' }, s.next_payment_date ? fmtDay(s.next_payment_date) : '—')))) : empty('Nenhuma assinatura ativa ainda.')),
   h('p', null, h('small', null, `Consultado no Mercado Pago em ${fmtTs(m.fetched_at)} (atualizado a cada 5 minutos).`)));
   return box;
+}
+
+// ---------------- Recebimentos das clínicas pelo Mercado Pago (taxas da plataforma) ----------------
+let recvMonths = 12;
+async function recebimentos(view) {
+  const r = await get(A(`/receivables?months=${recvMonths}`));
+  const M = { pix: 'Pix', cartao_credito: 'Cartão de crédito', cartao_debito: 'Cartão de débito', transferencia: 'Saldo / outro' };
+  const period = h('select', { class: 'input', style: { width: 'auto' }, onchange: (e) => { recvMonths = Number(e.target.value); refresh(); } },
+    [[1, 'Último mês'], [3, 'Últimos 3 meses'], [6, 'Últimos 6 meses'], [12, 'Últimos 12 meses'], [60, 'Tudo (5 anos)']].map(([v, l]) => h('option', { value: v, selected: v === recvMonths }, l)));
+  const csv = () => {
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [['Data', 'Clínica', 'Valor pago', 'Taxa da plataforma', 'Tarifa Mercado Pago', 'Forma', 'Pagamento MP'].map(esc).join(';'),
+      ...r.recent.map((p) => [fmtTs(p.approved_at), p.clinic, p.amount.toFixed(2).replace('.', ','), p.fee.toFixed(2).replace('.', ','), p.mp_fee == null ? '' : p.mp_fee.toFixed(2).replace('.', ','), M[p.method] || p.method || '', p.mp_payment_id].map(esc).join(';'))];
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+    a.download = `recebimentos-mercado-pago-${new Date().toISOString().slice(0, 10)}.csv`; a.click(); URL.revokeObjectURL(a.href);
+  };
+  const t = r.totals;
+  view.append(head('Recebimentos e taxas', 'Pagamentos que os pacientes fizeram às clínicas pelo link do Mercado Pago e a taxa da plataforma em cada um. Sem dados de pacientes.',
+    h('div', { class: 'row' }, period, h('button', { class: 'btn', disabled: !r.recent.length, onclick: csv }, icon('download', 15), 'Exportar CSV'))));
+  if (!r.configured) view.append(h('div', { class: 'notice info', style: { marginBottom: '14px' } }, icon('wallet'), h('div', null, 'Os recebimentos pelo app ainda não estão liberados: preencha o Client ID e o Client Secret em ', h('a', { href: '#/apis' }, 'APIs e integrações'), '.')));
+  view.append(h('div', { class: 'kpis' },
+    kpi('Taxas da plataforma', money2(t.fee), 'wallet', `taxa atual: ${String(r.fee_pct).replace('.', ',')}%`, 'good'),
+    kpi('Volume recebido pelas clínicas', money2(t.gross), 'trending', `${t.n} pagamento(s)`, 'blue'),
+    kpi('Tarifas do Mercado Pago', money2(t.mp_fee), 'receipt', t.mp_fee_unknown ? `${t.mp_fee_unknown} pagamento(s) sem a tarifa informada` : 'pagas pelas clínicas'),
+    kpi('Clínicas conectadas', r.accounts.length, 'users', `${r.by_clinic.length} recebeu(ram) no período`)),
+  h('div', { class: 'grid g2' },
+    card('Taxas da plataforma por mês', h('div', { class: 'card-body' }, r.by_month.length ? barChart(r.by_month.map((m) => ({ label: `${m.month.slice(5)}/${m.month.slice(2, 4)}`, value: m.fee })), { height: 200, format: (v) => money2(v) }) : empty('Nenhum pagamento no período.'))),
+    card('Por clínica', r.by_clinic.length ? table(['Clínica', 'Pagamentos', 'Volume', 'Taxa da plataforma', 'Último'], r.by_clinic.map((c) => h('tr', null,
+      h('td', null, c.name), h('td', { class: 'right' }, c.n), h('td', { class: 'right nowrap' }, money2(c.gross)), h('td', { class: 'right nowrap' }, h('b', null, money2(c.fee))), h('td', { class: 'nowrap' }, fmtDay(c.last))))) : empty('Nenhum pagamento no período.'))),
+  card('Pagamentos', r.recent.length ? table(['Data', 'Clínica', 'Valor', 'Taxa da plataforma', 'Tarifa MP', 'Forma', 'Nº no Mercado Pago'], r.recent.map((p) => h('tr', null,
+    h('td', { class: 'nowrap' }, fmtTs(p.approved_at)), h('td', null, p.clinic), h('td', { class: 'right nowrap' }, money2(p.amount)), h('td', { class: 'right nowrap' }, money2(p.fee)),
+    h('td', { class: 'right nowrap' }, p.mp_fee == null ? '—' : money2(p.mp_fee)), h('td', null, M[p.method] || p.method || '—'), h('td', null, h('small', { class: 'muted' }, p.mp_payment_id))))) : empty('Nenhum pagamento no período.')),
+  card('Clínicas com Mercado Pago conectado', r.accounts.length ? table(['Clínica', 'Conta do Mercado Pago', 'Conectada em', ''], r.accounts.map((a) => h('tr', null,
+    h('td', null, a.clinic), h('td', null, a.nickname || '—', a.email ? h('div', null, h('small', { class: 'muted' }, a.email)) : null), h('td', { class: 'nowrap' }, fmtTs(a.connected_at)),
+    h('td', null, a.live_mode === false ? pill('amber', 'conta de teste') : null)))) : empty('Nenhuma clínica conectou o Mercado Pago ainda.')),
+  h('p', null, h('small', { class: 'muted' }, 'A taxa da plataforma de cada pagamento é a informada pelo próprio Mercado Pago; pagamentos anteriores a este relatório usam a taxa calculada no link. Estornos feitos no Mercado Pago não são descontados aqui.')));
 }
 
 // ---------------- Usuários e marketing ----------------

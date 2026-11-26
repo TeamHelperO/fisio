@@ -333,6 +333,15 @@ CREATE TABLE IF NOT EXISTS saas.clinic_mp_accounts (
   access_enc text NOT NULL, refresh_enc text, expires_at timestamptz, live_mode boolean,
   connected_by text, connected_at timestamptz NOT NULL DEFAULT now()
 );
+-- Registro central dos pagamentos recebidos pelas clínicas via Mercado Pago (relatório de taxas do /admin; sem dados de pacientes)
+CREATE TABLE IF NOT EXISTS saas.mp_receipts (
+  mp_payment_id text PRIMARY KEY,
+  clinic_id integer NOT NULL REFERENCES saas.clinics(id) ON DELETE CASCADE,
+  charge_id integer NOT NULL,
+  amount numeric(12,2) NOT NULL, platform_fee numeric(12,2) NOT NULL DEFAULT 0, mp_fee numeric(12,2),
+  method text, approved_at timestamptz NOT NULL DEFAULT now(), created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mp_receipts_approved ON saas.mp_receipts(approved_at);
 CREATE TABLE IF NOT EXISTS saas.mp_oauth_states (
   state_hash text PRIMARY KEY,
   clinic_id integer NOT NULL REFERENCES saas.clinics(id) ON DELETE CASCADE,

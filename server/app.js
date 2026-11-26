@@ -2066,6 +2066,13 @@ async function registerMpPayment(clinic, p) {
     await q.run("UPDATE charges SET status='pago', paid_at=?, method=?, receipt_number=?, mp_payment_id=? WHERE id=? AND status<>'pago'",
       day, MP_METHOD(p), await nextReceipt(day), String(p.id), c.id);
     await audit(actx, 'pagamento_mercado_pago', 'charge', c.id, c.patient_id, { valor: p.transaction_amount, forma: MP_METHOD(p), pagamento_mp: p.id, taxa_plataforma: c.platform_fee || 0 });
+    // registro central para o relatório de recebimentos do /admin (taxas reais informadas pelo Mercado Pago)
+    const fees = Array.isArray(p.fee_details) ? p.fee_details : [];
+    const feeOf = (t) => { const f = fees.filter((x) => x.type === t); return f.length ? f.reduce((a, x) => a + Number(x.amount || 0), 0) : null; };
+    await q.run(`INSERT INTO saas.mp_receipts(mp_payment_id, clinic_id, charge_id, amount, platform_fee, mp_fee, method, approved_at)
+      VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (mp_payment_id) DO NOTHING`,
+    String(p.id), clinic.id, c.id, Number(p.transaction_amount) || c.amount, feeOf('application_fee') ?? (c.platform_fee || 0), feeOf('mercadopago_fee'), MP_METHOD(p),
+    p.date_approved ? new Date(p.date_approved).toISOString() : new Date().toISOString());
   });
   // avisa quem gerou a cobrança (ou os administradores)
   try {
