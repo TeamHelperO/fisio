@@ -64,7 +64,7 @@ function phoneKey(digits) {
 function render(text, vars) { return String(text || '').replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] ?? '' : m)).trim(); }
 // "sim" / "não" na resposta do paciente (ignora acentos, maiúsculas, pontuação e emojis de positivo)
 function intent(text) {
-  const t = String(text || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^\p{L}\p{N}\s👍👎]/gu, ' ').trim();
+  const t = String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}\s👍👎]/gu, ' ').trim();
   if (!t) return null;
   const w = t.split(/\s+/);
   const yes = ['sim', 's', 'confirmo', 'confirmado', 'confirmar', 'confirma', 'ok', '1', '👍', 'certo', 'combinado', 'yes'];
@@ -99,7 +99,7 @@ module.exports = function whatsapp({ route, requireRole, audit, clinicAccess, AP
   async function status(ctx) {
     const a = await account(ctx.clinic.id);
     const cfg = await loadCfg();
-    return { available: evo.enabled(), connected: a?.state === 'open', state: a?.state || null, phone: a?.phone || null, connected_at: a?.connected_at || null,
+    return { available: evo.enabled(), connected: a?.state === 'open', state: a?.state || null, label: a?.label || null, phone: a?.phone || null, connected_at: a?.connected_at || null,
       settings: cfg, defaults: DEFAULTS, vars: VARS, offsets: OFFSETS };
   }
   route('GET', '/api/whatsapp', async (ctx) => { requireRole(ctx.user, ['admin']); return status(ctx); });
@@ -110,16 +110,34 @@ module.exports = function whatsapp({ route, requireRole, audit, clinicAccess, AP
     if (!evo.enabled()) throw new HttpError(503, 'O WhatsApp ainda não foi configurado na plataforma.');
     let a = await account(ctx.clinic.id);
     if (a?.state === 'open') return { state: 'open' };
+    const label = labelOf(ctx.body?.label, a?.label);
     const secret = crypto.randomBytes(24).toString('base64url');
-    const instance = a?.instance || `fisio-${ctx.clinic.id}-${crypto.randomBytes(4).toString('hex')}`;
+    // o nome também aparece no painel da Evolution (ex.: fisio-3-1a2b3c4d-recepcao)
+    const slug = label.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30);
+    const instance = a?.instance || `fisio-${ctx.clinic.id}-${crypto.randomBytes(4).toString('hex')}${slug ? `-${slug}` : ''}`;
     await evo.createInstance(instance, `${APP_URL}/api/whatsapp/webhook/${ctx.clinic.id}/${secret}`);
-    await currentSql().unsafe(`INSERT INTO saas.clinic_whatsapp(clinic_id, instance, hook_hash, state, created_by) VALUES ($1,$2,$3,'connecting',$4)
-      ON CONFLICT (clinic_id) DO UPDATE SET instance=excluded.instance, hook_hash=excluded.hook_hash, state='connecting', phone=NULL, connected_at=NULL, created_by=excluded.created_by, updated_at=now()`,
-    [ctx.clinic.id, instance, sha256(secret), ctx.user.name]);
+    await currentSql().unsafe(`INSERT INTO saas.clinic_whatsapp(clinic_id, instance, hook_hash, state, created_by, label) VALUES ($1,$2,$3,'connecting',$4,$5)
+      ON CONFLICT (clinic_id) DO UPDATE SET instance=excluded.instance, label=excluded.label, hook_hash=excluded.hook_hash, state='connecting', phone=NULL, connected_at=NULL, created_by=excluded.created_by, updated_at=now()`,
+    [ctx.clinic.id, instance, sha256(secret), ctx.user.name, label]);
     a = await account(ctx.clinic.id);
     const st = await evo.state(instance);
     if (st === 'open') return markOpen(ctx, a);
     return { state: 'connecting', ...(await evo.connect(instance)) };
+  });
+  function labelOf(v, fallback) {
+    const s = String(v ?? '').replace(/\s+/g, ' ').trim();
+    if (!s) { if (fallback) return fallback; throw new HttpError(400, 'Dê um nome para a conexão (ex.: Recepção).'); }
+    if (s.length > 60) throw new HttpError(400, 'Nome da conexão: no máximo 60 caracteres.');
+    return s;
+  }
+  route('PUT', '/api/whatsapp/label', async (ctx) => {
+    requireRole(ctx.user, ['admin']);
+    const a = await account(ctx.clinic.id);
+    if (!a) throw new HttpError(400, 'Conecte o WhatsApp da clínica primeiro.');
+    const label = labelOf(ctx.body?.label);
+    await currentSql().unsafe('UPDATE saas.clinic_whatsapp SET label=$2, updated_at=now() WHERE clinic_id=$1', [a.clinic_id, label]);
+    await audit(ctx, 'renomeou_whatsapp', 'clinic', a.clinic_id, null, { nome: label });
+    return { label };
   });
   // conexão concluída (vista pela tela ou pelo aviso da Evolution): grava o número e registra na auditoria uma vez só
   async function markOpen(ctx, a) {

@@ -11,6 +11,7 @@ function fmtPhone(d) {
   const m = String(d).match(/^55(\d{2})(\d{4,5})(\d{4})$/);
   return m ? `+55 (${m[1]}) ${m[2]}-${m[3]}` : `+${d}`;
 }
+const PENCIL_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
 let poll = null;
 const stopPoll = () => { if (poll) { clearTimeout(poll); poll = null; } };
 
@@ -43,9 +44,17 @@ function connectionCard(st, body) {
       h('div', null, h('button', { class: 'btn sm ghost', onclick: () => { stopPoll(); reload(); } }, 'Cancelar')));
     poll = setTimeout(async () => { try { showQr(await get('/whatsapp/qr')); } catch (e) { toast(e.message, 'error'); stopPoll(); } }, 4000);
   };
+  const nameInput = h('input', { class: 'input', maxLength: 60, value: st.label || '', placeholder: 'Ex.: Recepção, Dra. Ana, Unidade Centro', style: { maxWidth: '320px' } });
   const connect = async (btn) => {
+    const label = nameInput.value.trim();
+    if (!label) { toast('Dê um nome para a conexão', 'error'); nameInput.focus(); return; }
     btn.disabled = true;
-    try { showQr(await post('/whatsapp/connect')); } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
+    try { showQr(await post('/whatsapp/connect', { label })); } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
+  };
+  const rename = async () => {
+    const v = await confirmDialog('Novo nome da conexão:', { title: 'Renomear conexão', okLabel: 'Salvar', input: { label: 'Nome da conexão', placeholder: st.label || 'Ex.: Recepção' } });
+    if (!v || typeof v !== 'string' || !v.trim()) return;
+    try { await put('/whatsapp/label', { label: v }); toast('Nome atualizado'); reload(); } catch (e) { toast(e.message, 'error'); }
   };
   if (st.connected) {
     const since = st.connected_at ? new Date(st.connected_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
@@ -58,6 +67,8 @@ function connectionCard(st, body) {
       h('div', { class: 'wa-connected' },
         avatar,
         h('div', { class: 'wa-info' },
+          h('div', { class: 'wa-name' }, st.label || 'WhatsApp da clínica',
+            h('button', { class: 'wa-rename', title: 'Renomear conexão', 'aria-label': 'Renomear conexão', onclick: rename, html: PENCIL_SVG })),
           h('div', { class: 'wa-status' }, h('span', { class: 'wa-dot' }), 'Conectado'),
           h('div', { class: 'wa-phone' }, st.phone ? fmtPhone(st.phone) : 'WhatsApp da clínica'),
           since ? h('small', { class: 'help' }, `Conectado desde ${since}`) : null),
@@ -70,6 +81,8 @@ function connectionCard(st, body) {
     if (st.state === 'close') area.append(h('div', { class: 'notice' }, icon('shield'), h('div', null, 'A conexão com o WhatsApp caiu (o celular foi desconectado ou ficou muito tempo sem internet). Escaneie o QR Code de novo.')));
     area.append(
       h('p', { style: { margin: 0 } }, 'Conecte o WhatsApp da clínica para enviar lembretes de consulta automaticamente. O paciente pode responder SIM para confirmar ou NÃO para desmarcar, e a agenda é atualizada sozinha.'),
+      h('label', { class: 'field', style: { maxWidth: '320px' } }, h('span', null, 'Nome da conexão'), nameInput,
+        h('small', { class: 'help' }, 'Para identificar este WhatsApp (aparece aqui e no painel da Evolution).')),
       h('div', null, btn));
   }
   return h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Conexão do WhatsApp')), h('div', { class: 'card-body' }, area));

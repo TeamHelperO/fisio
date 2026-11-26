@@ -380,6 +380,7 @@ CREATE TABLE IF NOT EXISTS saas.clinic_whatsapp (
   instance text NOT NULL UNIQUE, hook_hash text NOT NULL, state text NOT NULL DEFAULT 'connecting', phone text,
   connected_at timestamptz, created_by text, updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE saas.clinic_whatsapp ADD COLUMN IF NOT EXISTS label text; -- nome da conexão escolhido pela clínica
 CREATE TABLE IF NOT EXISTS saas.mp_oauth_states (
   state_hash text PRIMARY KEY,
   clinic_id integer NOT NULL REFERENCES saas.clinics(id) ON DELETE CASCADE,
