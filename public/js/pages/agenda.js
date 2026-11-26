@@ -3,6 +3,14 @@ import { get, post, put, del, qs } from '../api.js';
 import { state, go, isClinical } from '../state.js';
 
 const START_H = 7; const END_H = 21; const HOUR_PX = 56;
+// situação do pagamento de um atendimento: pago, parcial ou a pagar
+export function payState(a) {
+  const paid = Number(a.paid_total) || 0; const price = Number(a.price) || 0;
+  if (!price && !paid) return null;
+  if (paid >= price && paid > 0) return { cls: 'green', label: 'Pago', short: 'Pago' };
+  if (paid > 0) return { cls: 'amber', label: `${money(paid)} pago de ${money(price)}`, short: paid * 2 === price ? '50% pago' : 'Parcial' };
+  return { cls: 'gray', label: 'A pagar', short: 'A pagar' };
+}
 
 // ======================= Modal de agendamento =======================
 export async function appointmentModal(appt = {}, onSaved = () => {}) {
@@ -23,7 +31,7 @@ export async function appointmentModal(appt = {}, onSaved = () => {}) {
     { key: 'kind', label: 'Tipo de atendimento', type: 'select', options: Object.entries(LABELS.kind), empty: false },
     { key: 'professional_id', label: 'Fisioterapeuta', type: 'select', options: state.professionals.map((p) => [p.id, p.name]), emptyLabel: '— Não definido —' },
     { key: 'status', label: 'Situação', type: 'select', options: Object.entries(LABELS.appt), empty: false },
-    { key: 'price', label: 'Valor do atendimento (R$)', type: 'number', min: 0, step: '0.01', help: 'Use 0 para atendimentos cobertos por pacote. A cobrança é gerada ao marcar como "Realizado".' },
+    { key: 'price', label: 'Valor do atendimento (R$)', type: 'number', min: 0, step: '0.01', help: 'Use 0 para atendimentos cobertos por pacote. O que faltar pagar vira cobrança ao marcar como "Realizado".' },
     isNew ? { key: 'repeat_weeks', label: 'Repetir semanalmente', type: 'select', options: [[1, 'Não repetir'], ...[2, 3, 4, 6, 8, 10, 12, 16, 20, 24].map((n) => [n, `${n} semanas`])], empty: false } : null,
     { key: 'notes', label: 'Observações', type: 'textarea', rows: 2 },
   ].filter(Boolean);
@@ -33,6 +41,30 @@ export async function appointmentModal(appt = {}, onSaved = () => {}) {
       h('option', { value: '' }, 'Preencher valor a partir de um serviço…'), activeServices.map((s) => h('option', { value: s.id }, `${s.name} — ${money(s.price)}`)));
     form.insertBefore(h('label', { class: 'field span-all' }, h('span', null, 'Serviço (opcional)'), svc), form.children[1]);
   }
+  // ---- pagamento: depois do atendimento, sinal de 50% ou tudo pago agora ----
+  const paid = Number(appt.paid_total) || 0;
+  const price = () => Number(form.inputs.price.value) || 0;
+  const payOpts = paid > 0
+    ? [['depois', 'Restante será pago depois'], ['pago', 'Pagou o restante agora']]
+    : [['depois', 'Vai pagar depois do atendimento'], ['sinal', 'Pagou 50% agora (sinal)'], ['pago', 'Já pagou o valor total']];
+  const paySel = h('select', { class: 'input', name: 'payment' }, payOpts.map(([v, l]) => h('option', { value: v }, l)));
+  const methodSel = h('select', { class: 'input', name: 'payment_method' }, h('option', { value: '' }, 'Selecione…'), Object.entries(LABELS.method).map(([v, l]) => h('option', { value: v }, l)));
+  const payInfo = h('small', { class: 'help' });
+  const methodField = h('label', { class: 'field' }, h('span', null, 'Forma de pagamento', h('b', { class: 'req' }, ' *')), methodSel);
+  const payStatus = paid > 0 ? h('div', { class: 'notice info span-all' }, icon('check'), h('span', null, paid >= (Number(appt.price) || 0) ? `Pago: ${money(paid)} (valor total).` : `Já pago: ${money(paid)} de ${money(appt.price)}. Falta ${money((Number(appt.price) || 0) - paid)}.`)) : null;
+  const updPay = () => {
+    const v = paySel.value; const pr = price();
+    methodField.style.display = v === 'depois' ? 'none' : '';
+    payInfo.textContent = v === 'depois' ? (paid > 0 ? 'O restante vira cobrança ao marcar como "Realizado".' : 'A cobrança é gerada ao marcar como "Realizado".')
+      : v === 'sinal' ? `Registra agora ${money(Math.round(pr * 50) / 100)} pago, com recibo. O restante (${money(pr - Math.round(pr * 50) / 100)}) vira cobrança ao realizar o atendimento.`
+      : `Registra agora ${money(Math.max(0, pr - paid))} pago, com recibo. Nada fica para cobrar depois.`;
+    if (isNew && Number(form.inputs.repeat_weeks?.value) > 1 && v !== 'depois') payInfo.textContent += ' Vale só para o primeiro atendimento da série.';
+  };
+  paySel.addEventListener('change', updPay); form.inputs.price.addEventListener('input', updPay); form.inputs.repeat_weeks?.addEventListener('change', updPay);
+  const fullyPaid = paid > 0 && paid >= (Number(appt.price) || 0);
+  form.append(h('h4', { class: 'form-section span-all' }, 'Pagamento'), payStatus,
+    fullyPaid ? null : h('label', { class: 'field' }, h('span', null, 'Situação do pagamento'), paySel, payInfo), fullyPaid ? null : methodField);
+  updPay();
   // ao escolher paciente, sugere o profissional responsável
   form.inputs.patient_id.addEventListener('change', () => {
     const p = patients.find((x) => String(x.id) === form.inputs.patient_id.value);
@@ -42,10 +74,14 @@ export async function appointmentModal(appt = {}, onSaved = () => {}) {
   const save = async (extra = {}, force = false) => {
     if (!form.validate()) return;
     const v = { ...form.getValues(), ...extra };
-    const body = { patient_id: v.patient_id, professional_id: v.professional_id, start: `${v.date}T${v.time}`, duration: v.duration, kind: v.kind, status: v.status, price: v.price, notes: v.notes, repeat_weeks: v.repeat_weeks, force };
+    const payment = fullyPaid ? 'depois' : paySel.value;
+    if (payment !== 'depois' && !(Number(v.price) > 0)) return toast('Informe o valor do atendimento para registrar o pagamento', 'error');
+    if (payment !== 'depois' && !methodSel.value) return toast('Escolha a forma de pagamento', 'error');
+    const body = { patient_id: v.patient_id, professional_id: v.professional_id, start: `${v.date}T${v.time}`, duration: v.duration, kind: v.kind, status: v.status, price: v.price, notes: v.notes, repeat_weeks: v.repeat_weeks, payment, payment_method: methodSel.value, force };
     try {
-      if (isNew) await post('/appointments', body); else await put(`/appointments/${appt.id}`, body);
+      const r = isNew ? await post('/appointments', body) : await put(`/appointments/${appt.id}`, body);
       m.close(); toast(isNew ? (Number(v.repeat_weeks) > 1 ? `${v.repeat_weeks} atendimentos agendados` : 'Atendimento agendado') : 'Agendamento atualizado'); onSaved();
+      if (r?.paid_warning) toast(`Este atendimento tem ${money(r.paid_total)} pago. Se for devolver, faça o estorno no Financeiro.`, 'error');
     } catch (e) {
       if (e.status === 409) { if (await confirmDialog(`${e.message}.\nDeseja agendar mesmo assim?`, { okLabel: 'Agendar mesmo assim' })) save(extra, true); }
       else toast(e.message, 'error');
@@ -124,7 +160,7 @@ export async function agendaPage(view) {
         const [hh, mm] = a.start.slice(11, 16).split(':').map(Number);
         const top = ((hh - START_H) * 60 + mm) / 60 * HOUR_PX; const height = Math.max(22, (a.duration / 60) * HOUR_PX - 2);
         col.append(h('div', { class: `ev ${a.status}`, style: { top: `${Math.max(0, top)}px`, height: `${height}px` }, title: `${a.patient_name} — ${LABELS.appt[a.status]}`, onclick: () => appointmentModal(a, refresh) },
-          h('b', null, a.patient_name), `${fmtTime(a.start)} · ${LABELS.kind[a.kind]}`));
+          h('b', null, a.patient_name), `${fmtTime(a.start)} · ${LABELS.kind[a.kind]}`, payState(a) && a.status !== 'cancelado' ? h('span', { class: `ev-pay ${payState(a).cls}` }, payState(a).short) : null));
       }
       body.append(col);
     }
@@ -184,7 +220,7 @@ export async function patientAppointments(body, p) {
       h('thead', null, h('tr', null, ['Data', 'Horário', 'Tipo', 'Profissional', 'Situação', 'Valor'].map((t) => h('th', null, t)))),
       h('tbody', null, rows.map((a) => h('tr', { class: 'click', onclick: () => appointmentModal(a, refresh) },
         h('td', null, `${WEEKDAYS[new Date(a.start).getDay()]} ${fmtDate(a.start)}`), h('td', null, fmtTime(a.start)), h('td', null, LABELS.kind[a.kind]),
-        h('td', null, a.professional_name || '—'), h('td', null, badge(a.status, 'appt')), h('td', null, a.price ? money(a.price) : '—'))))))
+        h('td', null, a.professional_name || '—'), h('td', null, badge(a.status, 'appt')), h('td', null, a.price ? money(a.price) : '—', payState(a) ? h('div', null, h('span', { class: `badge ${payState(a).cls}` }, payState(a).label)) : null))))))
       : empty('Nenhum atendimento agendado para este paciente.')));
 }
 

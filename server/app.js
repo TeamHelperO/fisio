@@ -803,26 +803,63 @@ async function overlapCheck(a, ignoreId) {
   }
 }
 // Gera cobrança automaticamente quando atendimento avulso é marcado como realizado
+// valor já lançado para o atendimento fora da cobrança principal (sinal / pagamento antecipado)
+async function advanceTotal(a) {
+  return Number((await q.get("SELECT COALESCE(SUM(amount),0) t FROM charges WHERE appointment_id=? AND id<>? AND status<>'cancelado'", a.id, a.charge_id || 0)).t) || 0;
+}
+const cents = (v) => Math.round(v * 100) / 100;
 async function syncCharge(ctx, apptId) {
   const a = await q.get('SELECT * FROM appointments WHERE id=?', apptId);
   const ch = a.charge_id ? await q.get('SELECT * FROM charges WHERE id=?', a.charge_id) : null;
-  if (a.status === 'realizado' && a.price > 0 && !ch) {
+  const rest = cents(a.price - await advanceTotal(a));
+  if (a.status === 'realizado' && rest > 0 && !ch) {
     const [y, m, d] = a.start.slice(0, 10).split('-');
+    const adv = rest < a.price;
     const r = await q.run('INSERT INTO charges(patient_id, professional_id, description, amount, due_date, appointment_id, created_by) VALUES (?,?,?,?,?,?,?)',
-      a.patient_id, a.professional_id, `Atendimento de fisioterapia — ${d}/${m}/${y}`, a.price, a.start.slice(0, 10), a.id, ctx.user.id);
+      a.patient_id, a.professional_id, `${adv ? 'Restante do atendimento' : 'Atendimento de fisioterapia'} — ${d}/${m}/${y}`, rest, a.start.slice(0, 10), a.id, ctx.user.id);
     await q.run('UPDATE appointments SET charge_id=? WHERE id=?', Number(r.lastInsertRowid), a.id);
   } else if (a.status !== 'realizado' && ch && ch.status === 'pendente') {
     await q.run('DELETE FROM charges WHERE id=?', ch.id);
     await q.run('UPDATE appointments SET charge_id=NULL WHERE id=?', a.id);
   } else if (ch && ch.status === 'pendente') {
     // cobrança pendente acompanha o atendimento (paciente, profissional e valor)
+    if (rest <= 0) { await q.run('DELETE FROM charges WHERE id=?', ch.id); await q.run('UPDATE appointments SET charge_id=NULL WHERE id=?', a.id); return; }
     await q.run('UPDATE charges SET patient_id=?, professional_id=?, amount=? WHERE id=?',
-      a.patient_id, a.professional_id, a.price > 0 ? a.price : ch.amount, ch.id);
+      a.patient_id, a.professional_id, a.price > 0 ? rest : ch.amount, ch.id);
   }
 }
+// Pagamento informado no agendamento: 'depois' (cobra ao realizar), 'sinal' (50% agora) ou 'pago' (tudo agora)
+const PAY_OPTIONS = ['depois', 'sinal', 'pago'];
+async function applyPayment(ctx, apptId, payment, method) {
+  if (!payment || payment === 'depois') return;
+  const a = await q.get('SELECT * FROM appointments WHERE id=?', apptId);
+  if (!(a.price > 0)) throw new HttpError(400, 'Informe o valor do atendimento para registrar o pagamento');
+  if (!METHODS.includes(method)) throw new HttpError(400, 'Informe a forma de pagamento');
+  const target = payment === 'sinal' ? cents(a.price / 2) : a.price;
+  const ch = a.charge_id ? await q.get('SELECT * FROM charges WHERE id=?', a.charge_id) : null;
+  const paid = Number((await q.get("SELECT COALESCE(SUM(amount),0) t FROM charges WHERE appointment_id=? AND status='pago'", a.id)).t) || 0;
+  let need = cents(target - paid);
+  if (need <= 0) return;
+  const day = today();
+  // já existe a cobrança do restante (atendimento realizado): quita ela
+  if (ch && ch.status === 'pendente' && payment === 'pago') {
+    await q.run("UPDATE charges SET status='pago', paid_at=?, method=?, receipt_number=? WHERE id=?", day, method, await nextReceipt(day), ch.id);
+    await audit(ctx, 'registrou_pagamento', 'charge', ch.id, a.patient_id, { amount: ch.amount, method });
+    need = cents(need - ch.amount);
+    if (need <= 0) return;
+  }
+  const [y, m, d] = a.start.slice(0, 10).split('-');
+  const desc = payment === 'sinal' && paid === 0 ? `Sinal (50%) — atendimento de ${d}/${m}/${y}` : `Pagamento antecipado — atendimento de ${d}/${m}/${y}`;
+  const r = await q.run("INSERT INTO charges(patient_id, professional_id, description, amount, due_date, status, paid_at, method, receipt_number, appointment_id, created_by) VALUES (?,?,?,?,?,'pago',?,?,?,?,?)",
+    a.patient_id, a.professional_id, desc, need, day, day, method, await nextReceipt(day), a.id, ctx.user.id);
+  await audit(ctx, 'registrou_pagamento', 'charge', Number(r.lastInsertRowid), a.patient_id, { amount: need, method, agendamento: a.id, tipo: payment });
+  await syncCharge(ctx, a.id);
+}
+const paidOf = async (apptId) => Number((await q.get("SELECT COALESCE(SUM(amount),0) t FROM charges WHERE appointment_id=? AND status='pago'", apptId)).t) || 0;
 route('GET', '/api/appointments', async (ctx) => {
   const sp = ctx.query; const s = scope(ctx.user);
-  let text = `SELECT a.*, p.name patient_name, p.phone, u.name professional_name, c.status charge_status FROM appointments a JOIN patients p ON p.id=a.patient_id
+  let text = `SELECT a.*, p.name patient_name, p.phone, u.name professional_name, c.status charge_status,
+    (SELECT COALESCE(SUM(x.amount),0) FROM charges x WHERE x.appointment_id=a.id AND x.status='pago') paid_total FROM appointments a JOIN patients p ON p.id=a.patient_id
     LEFT JOIN users u ON u.id=a.professional_id LEFT JOIN charges c ON c.id=a.charge_id WHERE 1=1 ${s.sql}`;
   const params = [...s.params];
   if (sp.get('from')) { text += ' AND a.start >= ?'; params.push(sp.get('from')); }
@@ -837,6 +874,9 @@ route('POST', '/api/appointments', async (ctx) => {
   const a = apptInput(ctx.body);
   if (!a.professional_id) a.professional_id = p.professional_id || (ctx.user.role !== 'recepcao' ? ctx.user.id : null);
   const repeat = Math.max(1, Math.min(52, Number(ctx.body.repeat_weeks) || 1));
+  const payment = oneOf(ctx.body.payment, PAY_OPTIONS, 'Pagamento', 'depois');
+  if (payment !== 'depois' && !(a.price > 0)) throw new HttpError(400, 'Informe o valor do atendimento para registrar o pagamento');
+  if (payment !== 'depois' && !METHODS.includes(ctx.body.payment_method)) throw new HttpError(400, 'Informe a forma de pagamento');
   const starts = [];
   for (let i = 0; i < repeat; i++) {
     const d = new Date(a.start); d.setDate(d.getDate() + 7 * i);
@@ -859,7 +899,8 @@ route('POST', '/api/appointments', async (ctx) => {
         p.id, a.professional_id, starts[i], a.duration, a.kind, i === 0 ? a.status : 'agendado', a.price, a.notes);
       ids.push(Number(r.lastInsertRowid)); await syncCharge(ctx, ids[ids.length - 1]);
     }
-    await audit(ctx, 'criou', 'appointment', ids[0], p.id, { start: a.start, repeticoes: repeat });
+    await applyPayment(ctx, ids[0], payment, ctx.body.payment_method);
+    await audit(ctx, 'criou', 'appointment', ids[0], p.id, { start: a.start, repeticoes: repeat, pagamento: payment });
     return { ids };
   });
 });
@@ -867,25 +908,32 @@ route('PUT', '/api/appointments/:id', async (ctx) => {
   const ex = await q.get('SELECT * FROM appointments WHERE id=?', idParam(ctx.params.id)); if (!ex) throw new HttpError(404, 'Agendamento não encontrado');
   await getPatient(ctx.user, ex.patient_id);
   const pid = ctx.body.patient_id ? (await getPatient(ctx.user, ctx.body.patient_id)).id : ex.patient_id;
-  if (pid !== ex.patient_id && ex.charge_id && await q.get("SELECT 1 FROM charges WHERE id=? AND status='pago'", ex.charge_id)) {
+  if (pid !== ex.patient_id && await paidOf(ex.id) > 0) {
     throw new HttpError(400, 'Este atendimento já tem pagamento registrado (recibo emitido) e não pode ser transferido para outro paciente. Estorne o pagamento primeiro.');
   }
   const a = apptInput({ ...ex, ...ctx.body });
+  const payment = oneOf(ctx.body.payment, PAY_OPTIONS, 'Pagamento', 'depois');
   const conflict = await overlapCheck(a, ex.id);
   if (conflict && !ctx.body.force) throw new HttpError(409, conflict);
   return tx(async () => {
     await q.run('UPDATE appointments SET patient_id=?, professional_id=?, start=?, duration=?, kind=?, status=?, price=?, notes=? WHERE id=?',
       pid, a.professional_id, a.start, a.duration, a.kind, a.status, a.price, a.notes, ex.id);
     await syncCharge(ctx, ex.id);
+    await applyPayment(ctx, ex.id, payment, ctx.body.payment_method);
     await audit(ctx, 'alterou', 'appointment', ex.id, pid, { status: a.status, start: a.start });
-    return { ok: true };
+    const paid = await paidOf(ex.id);
+    return { ok: true, paid_total: paid, paid_warning: ['cancelado', 'falta'].includes(a.status) && paid > 0 };
   });
 });
 route('DELETE', '/api/appointments/:id', async (ctx) => {
   const ex = await q.get('SELECT * FROM appointments WHERE id=?', idParam(ctx.params.id)); if (!ex) throw new HttpError(404, 'Agendamento não encontrado');
   await getPatient(ctx.user, ex.patient_id);
-  if (ex.charge_id && await q.get("SELECT 1 FROM charges WHERE id=? AND status='pago'", ex.charge_id)) throw new HttpError(400, 'Este atendimento possui pagamento registrado. Altere a situação em vez de excluir.');
-  await tx(async () => { if (ex.charge_id) await q.run('DELETE FROM charges WHERE id=?', ex.charge_id); await q.run('DELETE FROM appointments WHERE id=?', ex.id); });
+  if (await paidOf(ex.id) > 0) throw new HttpError(400, 'Este atendimento possui pagamento registrado. Altere a situação em vez de excluir.');
+  await tx(async () => {
+    if (ex.charge_id) await q.run('DELETE FROM charges WHERE id=?', ex.charge_id);
+    await q.run("DELETE FROM charges WHERE appointment_id=? AND status<>'pago'", ex.id);
+    await q.run('DELETE FROM appointments WHERE id=?', ex.id);
+  });
   await audit(ctx, 'excluiu', 'appointment', ex.id, ex.patient_id, { start: ex.start });
   return { ok: true };
 });
