@@ -102,6 +102,14 @@ const DEFAULTS = {
     body: 'Olá, {{nome}}!\n\n{{paciente}} assinou o documento "{{documento}}" em {{data}}.\n\nO comprovante com a assinatura e os dados de verificação está na ficha do paciente, aba LGPD.',
     button: 'Ver na ficha do paciente',
   },
+  portal_link: {
+    group: 'Portal do paciente', optional: true, name: 'Link do portal (para o paciente)',
+    when: 'Enviado ao paciente quando a clínica gera o link do portal e escolhe "enviar por e-mail".',
+    vars: { nome: 'Primeiro nome do paciente', clinica: 'Nome da clínica', validade: 'Validade do link' }, link: true,
+    subject: 'Seu acompanhamento na {{clinica}}',
+    body: 'Olá, {{nome}}!\n\nA {{clinica}} criou um link pessoal para você acompanhar pelo celular: suas próximas consultas (com confirmação de presença), seus exercícios, pagamentos, documentos para assinar e um diário para registrar como está sua dor.\n\nO link vale por {{validade}}. Ele é pessoal: não compartilhe com outras pessoas.',
+    button: 'Abrir meu acompanhamento',
+  },
   pagamento_link: {
     group: 'Pagamentos pelo app', optional: true, name: 'Link de pagamento (para o paciente)',
     when: 'Enviado ao paciente quando a clínica manda o link do Mercado Pago por e-mail.',

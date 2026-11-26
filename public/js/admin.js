@@ -434,6 +434,7 @@ async function emails(view) {
     groupTable('Conta e acesso', 'E-mails essenciais de cadastro e senha: podem ter o texto alterado, mas não podem ser desligados.'),
     groupTable('Agendamento online', 'Avisos da página pública de agendamento: para a clínica (novo pedido) e para o paciente (recebido, confirmado, não confirmado).'),
     groupTable('Assinatura digital', 'Link de assinatura para o paciente e aviso para a clínica quando o documento é assinado.'),
+    groupTable('Portal do paciente', 'Link pessoal do paciente para acompanhar consultas, exercícios, pagamentos e o diário de dor.'),
     groupTable('Pagamentos pelo app', 'Link do Mercado Pago para o paciente pagar e aviso para a clínica quando o pagamento é aprovado.'),
     groupTable('Administradores da plataforma', 'Enviados aos administradores deste painel (/admin).'),
     card('Histórico de envios', logRows.length ? table(['Data', 'E-mail', 'Para', 'Clínica', 'Situação'], logRows.map((r) => h('tr', null,

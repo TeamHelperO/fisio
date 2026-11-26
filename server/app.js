@@ -1897,6 +1897,125 @@ route('POST', '/api/mercadopago/webhook', async (ctx) => {
   return { received: true };
 }, { public: true, webhook: true, raw: true });
 
+// ====================== Portal do paciente ======================
+// Link pessoal (sem senha) que a clínica envia ao paciente: próximas consultas (com confirmação de presença),
+// pagamentos pelo link do Mercado Pago, documentos para assinar, programa de exercícios e diário de dor.
+const PORTAL_DAYS = 180;
+const portalUrl = (token) => `${APP_URL}/paciente/${token}`;
+async function portalAccess(ctx) {
+  const key = `portal|${ctx.ip}`; await checkRate(key);
+  const token = ctx.params.token;
+  const bad = async () => { await failRate(key, 30, 30); throw new HttpError(404, 'Link do portal inválido ou desativado. Peça um novo link à clínica.'); };
+  if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,60}$/.test(token)) return bad();
+  const l = (await sql.unsafe('SELECT * FROM saas.portal_links WHERE token_hash=$1', [sha(token)]))[0];
+  if (!l || l.revoked_at || Number(l.expires_at) < Date.now()) return bad();
+  const clinic = await getClinic(l.clinic_id);
+  if (!clinic || clinicAccess(clinic).mode === 'blocked') throw new HttpError(404, 'Portal indisponível no momento. Fale com a clínica.');
+  return { link: l, clinic };
+}
+// executa dentro da clínica, garantindo que o paciente ainda existe
+async function inPortal(ctx, fn) {
+  const { link, clinic } = await portalAccess(ctx);
+  return withClinic(clinic, async () => {
+    const p = await q.get('SELECT id, name, email, phone FROM patients WHERE id=?', link.patient_id);
+    if (!p) throw new HttpError(404, 'Link do portal inválido ou desativado. Peça um novo link à clínica.');
+    ctx.user = null;
+    return fn({ link, clinic, p });
+  });
+}
+const KIND_PT = { avaliacao: 'Avaliação', sessao: 'Sessão', reavaliacao: 'Reavaliação', retorno: 'Retorno', domiciliar: 'Atendimento domiciliar', teleatendimento: 'Teleatendimento' };
+
+// ---- lado da clínica ----
+route('GET', '/api/patients/:id/portal', async (ctx) => {
+  const p = await getPatient(ctx.user, ctx.params.id);
+  const l = (await currentSql().unsafe('SELECT * FROM saas.portal_links WHERE clinic_id=$1 AND patient_id=$2 AND revoked_at IS NULL AND expires_at > $3 ORDER BY created_at DESC LIMIT 1', [ctx.clinic.id, p.id, Date.now()]))[0];
+  return l ? { active: true, created_at: l.created_at, expires_at: Number(l.expires_at), last_used_at: l.last_used_at, created_by: l.created_by_name } : { active: false };
+});
+route('POST', '/api/patients/:id/portal', async (ctx) => {
+  const p = await getPatient(ctx.user, ctx.params.id);
+  const token = crypto.randomBytes(32).toString('base64url');
+  // um link ativo por paciente: gerar um novo desativa o anterior
+  await q.run('UPDATE saas.portal_links SET revoked_at=? WHERE clinic_id=? AND patient_id=? AND revoked_at IS NULL', Date.now(), ctx.clinic.id, p.id);
+  await q.run('INSERT INTO saas.portal_links(token_hash, clinic_id, patient_id, expires_at, created_by_name) VALUES (?,?,?,?,?)', sha(token), ctx.clinic.id, p.id, Date.now() + PORTAL_DAYS * 86400e3, ctx.user.name);
+  await audit(ctx, 'gerou_link_portal', 'patient', p.id, p.id, null);
+  const url = portalUrl(token);
+  let emailed = false;
+  if (ctx.body.send_email && p.email) {
+    try {
+      await notify.sendTemplate('portal_link', { to: p.email, clinicId: ctx.clinic.id, url,
+        vars: { nome: p.name.split(' ')[0], clinica: (await getSettings()).clinic_name || ctx.clinic.name, validade: `${PORTAL_DAYS} dias` } });
+      emailed = true;
+    } catch (e) { console.error('Portal: e-mail não enviado', e.message); }
+  }
+  return { url, emailed, expires_at: Date.now() + PORTAL_DAYS * 86400e3 };
+});
+route('POST', '/api/patients/:id/portal/revoke', async (ctx) => {
+  const p = await getPatient(ctx.user, ctx.params.id);
+  await q.run('UPDATE saas.portal_links SET revoked_at=? WHERE clinic_id=? AND patient_id=? AND revoked_at IS NULL', Date.now(), ctx.clinic.id, p.id);
+  await audit(ctx, 'desativou_link_portal', 'patient', p.id, p.id, null);
+  return { ok: true };
+});
+const diaryView = (r) => ({ day: r.day, pain: r.pain, note: r.note_enc ? decrypt(r.note_enc) : '', updated_at: r.updated_at });
+route('GET', '/api/patients/:id/diary', async (ctx) => {
+  requireRole(ctx.user, CLINICAL);
+  const p = await getPatient(ctx.user, ctx.params.id);
+  return (await q.all('SELECT * FROM pain_diary WHERE patient_id=? ORDER BY day DESC LIMIT 180', p.id)).map(diaryView);
+});
+
+// ---- lado do paciente (público, pelo link) ----
+route('GET', '/api/portal/:token', async (ctx) => inPortal(ctx, async ({ link, clinic, p }) => {
+  await currentSql().unsafe('UPDATE saas.portal_links SET last_used_at=now() WHERE token_hash=$1', [link.token_hash]);
+  const s = await getSettings();
+  const now = nowLocal();
+  const appts = await q.all(`SELECT a.id, a.start, a.duration, a.kind, a.status, u.name professional FROM appointments a LEFT JOIN users u ON u.id=a.professional_id
+    WHERE a.patient_id=? AND a.start >= ? AND a.status IN ('agendado','confirmado') ORDER BY a.start LIMIT 10`, p.id, now.slice(0, 10));
+  const pending = await q.all("SELECT id, description, amount, due_date FROM charges WHERE patient_id=? AND status='pendente' AND pay_url IS NOT NULL ORDER BY due_date, id", p.id);
+  const paid = await q.all("SELECT description, amount, paid_at, method, receipt_number FROM charges WHERE patient_id=? AND status='pago' ORDER BY paid_at DESC, id DESC LIMIT 10", p.id);
+  const sigs = await q.all("SELECT id, title, expires_at FROM signature_requests WHERE patient_id=? AND status='pendente' AND expires_at >= ? ORDER BY id DESC", p.id, today());
+  const programs = (await q.all("SELECT * FROM exercise_programs WHERE patient_id=? AND status='ativo' ORDER BY start_date DESC, id DESC", p.id)).map(programView)
+    .map((x) => ({ id: x.id, title: x.title, start_date: x.start_date, frequency: x.frequency, duration: x.duration, notes: x.notes,
+      items: x.items.map((it) => ({ name: it.name, steps: it.steps, media_url: it.media_url, sets: it.sets, reps: it.reps, hold_s: it.hold_s, rest_s: it.rest_s, load: it.load, side: it.side, notes: it.notes })) }));
+  const diary = (await q.all('SELECT * FROM pain_diary WHERE patient_id=? ORDER BY day DESC LIMIT 60', p.id)).map(diaryView);
+  return {
+    clinic: { name: s.clinic_name || clinic.name, phone: s.phone || '', email: s.email || '', address: s.address || '' },
+    patient: { first_name: p.name.split(' ')[0] }, today: today(),
+    appointments: appts.map((a) => ({ ...a, kind: KIND_PT[a.kind] || a.kind, can_confirm: a.status === 'agendado' && a.start > now })),
+    pending, paid, signatures: sigs, programs, diary,
+  };
+}), { public: true });
+route('POST', '/api/portal/:token/appointments/:id/confirm', async (ctx) => inPortal(ctx, async ({ p }) => {
+  const a = await q.get('SELECT * FROM appointments WHERE id=? AND patient_id=?', idParam(ctx.params.id), p.id);
+  if (!a) throw new HttpError(404, 'Consulta não encontrada');
+  if (a.status === 'confirmado') return { ok: true };
+  if (a.status !== 'agendado' || a.start <= nowLocal()) throw new HttpError(400, 'Esta consulta não pode mais ser confirmada.');
+  await q.run("UPDATE appointments SET status='confirmado' WHERE id=?", a.id);
+  await audit(ctx, 'paciente_confirmou_presenca', 'appointment', a.id, p.id, { pelo: 'portal do paciente' });
+  return { ok: true };
+}), { public: true });
+route('POST', '/api/portal/:token/diary', async (ctx) => inPortal(ctx, async ({ p }) => {
+  const pain = Number(ctx.body.pain);
+  if (!Number.isInteger(pain) || pain < 0 || pain > 10) throw new HttpError(400, 'Escolha um número de 0 a 10');
+  const note = str(ctx.body.note, 500);
+  const day = today();
+  await q.run(`INSERT INTO pain_diary(patient_id, day, pain, note_enc) VALUES (?,?,?,?)
+    ON CONFLICT (patient_id, day) DO UPDATE SET pain=excluded.pain, note_enc=excluded.note_enc, updated_at=now_local()`, p.id, day, pain, note ? encrypt(note) : null);
+  return { ok: true, day };
+}), { public: true });
+// novo link de assinatura para um documento pendente (os links antigos ficam só com a clínica)
+route('POST', '/api/portal/:token/sign/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
+  const s = await q.get("SELECT * FROM signature_requests WHERE id=? AND patient_id=? AND status='pendente'", idParam(ctx.params.id), p.id);
+  if (!s || s.expires_at < today()) throw new HttpError(404, 'Este documento não está mais disponível para assinatura.');
+  const token = crypto.randomBytes(32).toString('base64url');
+  await q.run('INSERT INTO saas.signature_links(token_hash, clinic_id, request_id, expires_at) VALUES (?,?,?,?)', sha(token), clinic.id, s.id, new Date(`${s.expires_at}T23:59:00`).getTime());
+  return { url: `${APP_URL}/assinar/${token}` };
+}), { public: true });
+// link de pagamento atualizado (gera de novo se o anterior venceu)
+route('POST', '/api/portal/:token/pay/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
+  const c = await q.get("SELECT id FROM charges WHERE id=? AND patient_id=? AND status='pendente' AND pay_url IS NOT NULL", idParam(ctx.params.id), p.id);
+  if (!c) throw new HttpError(404, 'Esta cobrança não está mais em aberto.');
+  try { return { url: (await payLinkFor({ ...ctx, clinic, user: null }, c.id)).url }; } catch { throw new HttpError(400, 'Não foi possível abrir o pagamento agora. Fale com a clínica.'); }
+}), { public: true });
+
 // ====================== Recebimentos pelo app (Mercado Pago da clínica) ======================
 // A clínica conecta a própria conta do Mercado Pago (OAuth). Os links de pagamento são criados com o token
 // dela: o dinheiro cai direto na conta da clínica e a taxa da plataforma (opcional) vai para a conta da

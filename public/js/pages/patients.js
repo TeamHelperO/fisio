@@ -1,4 +1,5 @@
 import { h, icon, toast, buildForm, badge, fmtDate, fmtDT, age, empty, debounce, LABELS, confirmDialog, modal, downloadFile, today } from '../ui.js';
+import { portalModal, diaryCard } from './portal.js';
 import { get, post, put, del, qs } from '../api.js';
 import { state, go, back, isClinical, isAdmin, openPrint } from '../state.js';
 import { recordTab, evolutionsTab, painSeries } from './records.js';
@@ -113,6 +114,7 @@ export async function patientPage(view, [id, tab = 'resumo']) {
             p.profession ? h('span', null, p.profession) : null,
             h('span', null, `Responsável: ${p.professional_name || '—'}`))),
         h('div', { class: 'row' },
+          h('button', { class: 'btn', title: 'Link pessoal para o paciente acompanhar pelo celular', onclick: () => portalModal(p) }, icon('phone', 16), 'Portal do paciente'),
           h('button', { class: 'btn', onclick: () => go(`#/pacientes/${id}/editar`) }, icon('edit', 16), 'Editar'),
           isClinical() ? h('button', { class: 'btn primary', onclick: () => go(`#/registro/evolucao/novo/${id}`) }, icon('plus', 16), 'Nova evolução') : null))),
     h('nav', { class: 'tabs' }, tabs.map(([k, l]) => h('a', { href: `#/pacientes/${id}/${k}`, class: k === tab ? 'on' : '' }, l))),
@@ -162,6 +164,8 @@ async function summaryTab(body, p) {
     side.push(h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Plano de tratamento ativo'), plan ? h('a', { class: 'btn sm ghost', href: `#/registro/${plan.id}` }, 'Abrir') : null),
       h('div', { class: 'card-body' }, plan ? dl([['Diagnóstico fisioterapêutico', plan.data.diagnostico_fisio], ['Objetivo geral', plan.data.objetivo_geral], ['Frequência', plan.data.frequencia], ['Duração prevista', plan.data.duracao]])
         : empty('Nenhum plano ativo.', h('a', { class: 'btn primary sm', href: `#/registro/plano/novo/${p.id}` }, 'Criar plano')))));
+    const diary = await diaryCard(p);
+    if (diary) cards.push(diary);
     if (evols.length) {
       cards.push(h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Evolução da dor (EVA) por sessão'), h('a', { class: 'btn sm ghost', href: `#/pacientes/${p.id}/evolucoes` }, 'Ver evoluções')),
         h('div', { class: 'card-body' }, lineChart(...painSeries(evols)))));
