@@ -84,12 +84,12 @@ module.exports = function registerAdmin(deps) {
   route('POST', '/api/admin/login', async (ctx) => {
     const email = String(ctx.body.email || '').trim().toLowerCase().slice(0, 160);
     const password = String(ctx.body.password || '').slice(0, 200);
-    const key = `admin|${ctx.ip}|${email}`;
-    await checkRate(key);
+    const key = `admin|${ctx.ip}|${email}`; const ipKey = `loginip|${ctx.ip}`;
+    await checkRate(ipKey); await checkRate(key);
     const a = (await sql.unsafe('SELECT * FROM saas.admins WHERE email=$1', [email]))[0];
     const ok = checkPassword(password, a ? a.password_hash : DUMMY_HASH);
     if (!a || !a.active || !ok) {
-      await failRate(key, 5, 30);
+      await failRate(key, 5, 30); await failRate(ipKey, 30, 15);
       ctx.admin = null; await log(ctx, 'login_falhou', email);
       throw new HttpError(401, 'E-mail ou senha incorretos');
     }
@@ -130,9 +130,10 @@ module.exports = function registerAdmin(deps) {
       const list = JSON.parse(a.recovery_codes || '[]');
       const idx = norm.length === 8 ? list.indexOf(sha(`rc:${norm}`)) : -1;
       if (idx >= 0) {
+        const before = a.recovery_codes || '[]';
         list.splice(idx, 1);
-        await sql.unsafe('UPDATE saas.admins SET recovery_codes=$2 WHERE id=$1', [a.id, JSON.stringify(list)]);
-        via = 'codigo_recuperacao';
+        const upd = await sql.unsafe("UPDATE saas.admins SET recovery_codes=$2 WHERE id=$1 AND coalesce(recovery_codes, '[]')=$3 RETURNING id", [a.id, JSON.stringify(list), before]);
+        if (upd.length) via = 'codigo_recuperacao';
       }
     }
     if (!via) {

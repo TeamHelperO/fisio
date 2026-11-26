@@ -264,14 +264,14 @@ route('POST', '/api/signup', async (ctx) => {
 route('POST', '/api/login', async (ctx) => {
   const email = String(ctx.body.email || '').trim().toLowerCase().slice(0, 160);
   const password = String(ctx.body.password || '').slice(0, 200);
-  const key = `login|${ctx.ip}|${email}`;
+  const key = `login|${ctx.ip}|${email}`; const ipKey = `loginip|${ctx.ip}`;
   await ensureCore();
-  await checkRate(key);
+  await checkRate(ipKey); await checkRate(key);
   const idx = (await sql.unsafe('SELECT clinic_id, user_id FROM saas.user_index WHERE email=$1', [email]))[0];
   const clinic = idx ? await getClinic(idx.clinic_id) : null;
   if (!clinic) {
     checkPassword(password, DUMMY_HASH);
-    await failRate(key);
+    await failRate(key); await failRate(ipKey, 30, 15);
     throw new HttpError(401, 'E-mail ou senha incorretos');
   }
   if (clinicAccess(clinic).mode === 'blocked') throw new HttpError(403, 'O acesso desta clínica está suspenso. Entre em contato com o suporte.');
@@ -284,7 +284,7 @@ route('POST', '/api/login', async (ctx) => {
     await createSession(ctx.res, clinic.id, user.id, ctx.ip);
     return user;
   });
-  if (!u) { await failRate(key); throw new HttpError(401, 'E-mail ou senha incorretos'); }
+  if (!u) { await failRate(key); await failRate(ipKey, 30, 15); throw new HttpError(401, 'E-mail ou senha incorretos'); }
   await clearRate(key);
   return { ok: true };
 }, { public: true });
@@ -1508,12 +1508,13 @@ async function acceptBooking(ctx, reqId, patientId, { auto = false } = {}) {
   const r = await q.get('SELECT * FROM booking_requests WHERE id=?', reqId);
   if (!r) throw new HttpError(404, 'Pedido não encontrado');
   if (r.status !== 'pendente') throw new HttpError(400, 'Este pedido já foi respondido.');
-  let pid = patientId ? (await q.get('SELECT id FROM patients WHERE id=?', patientId))?.id : null;
-  if (patientId && !pid) throw new HttpError(404, 'Paciente não encontrado');
+  let pid = patientId ? (await getPatient(ctx.user, patientId)).id : null;
   if (!pid) {
     const digits = String(r.phone || '').replace(/\D/g, '');
-    const match = (r.email ? await q.get('SELECT id FROM patients WHERE lower(email)=?', r.email) : null)
-      || (digits.length >= 10 ? await q.get("SELECT id FROM patients WHERE regexp_replace(coalesce(phone,''), '\\D', '', 'g') = ?", digits) : null);
+    const byEmail = r.email ? await q.get('SELECT id FROM patients WHERE lower(email)=?', String(r.email).toLowerCase()) : null;
+    const byPhone = !byEmail && digits.length >= 10 ? await q.get("SELECT id, email FROM patients WHERE regexp_replace(coalesce(phone,''), '\\D', '', 'g') = ?", digits) : null;
+    // pelo telefone só quando o paciente não tem e-mail (senão, alguém com o telefone de outra pessoa poderia se vincular ao cadastro dela)
+    const match = byEmail || (byPhone && !byPhone.email ? byPhone : null);
     pid = match?.id || Number((await q.run('INSERT INTO patients(name, phone, email, professional_id, notes) VALUES (?,?,?,?,?)',
       r.name, r.phone, r.email, r.professional_id, 'Cadastro criado pelo agendamento online')).lastInsertRowid);
   }
@@ -2134,14 +2135,14 @@ route('POST', '/api/public/portal-password/:token', async (ctx) => {
 }, { public: true });
 route('POST', '/api/public/portal-login', async (ctx) => {
   const email = normEmail(ctx.body.email); const pw = String(ctx.body.password || '');
-  const key = `paclogin|${ctx.ip}|${email}`; await checkRate(key);
+  const key = `paclogin|${ctx.ip}|${email}`; const ipKey = `loginip|${ctx.ip}`; await checkRate(ipKey); await checkRate(key);
   const rows = EMAIL_RE.test(email) ? await sql.unsafe(`SELECT a.id, a.clinic_id, a.password_hash, c.name clinic FROM saas.patient_accounts a JOIN saas.clinics c ON c.id=a.clinic_id
     WHERE lower(a.email)=$1 AND a.password_hash IS NOT NULL`, [email]) : [];
   const ok = rows.filter((r) => checkPassword(pw, r.password_hash));
   if (!rows.length) checkPassword(pw, DUMMY_HASH);
   const usable = [];
   for (const r of ok) { const c = await getClinic(r.clinic_id); if (c && clinicAccess(c).mode !== 'blocked') usable.push(r); }
-  if (!usable.length) { await failRate(key, 8, 15); throw new HttpError(401, 'E-mail ou senha incorretos.'); }
+  if (!usable.length) { await failRate(key, 8, 15); await failRate(ipKey, 30, 15); throw new HttpError(401, 'E-mail ou senha incorretos.'); }
   await clearRate(key);
   const pick = usable.length === 1 ? usable[0] : usable.find((r) => r.id === Number(ctx.body.account_id));
   if (!pick) return { choose: usable.map((r) => ({ id: r.id, clinic: r.clinic })) }; // mesmo e-mail em mais de uma clínica
@@ -2480,14 +2481,21 @@ route('POST', '/api/mp/recebimentos/webhook/:clinicId', async (ctx) => {
   const type = body.type || body.topic || ctx.query.get('type') || ctx.query.get('topic');
   const id = String(body.data?.id || ctx.query.get('data.id') || ctx.query.get('id') || '');
   if (type !== 'payment' || !/^\d{1,30}$/.test(id)) return { received: true };
+  const hookKey = `mphook|${ctx.ip}`; await checkRate(hookKey);
+  const bad = () => failRate(hookKey, 30, 30); // avisos que não correspondem a pagamento nenhum da clínica
   const clinic = await getClinic(Number(ctx.params.clinicId) || 0);
-  if (!clinic) return { received: true };
-  await withClinic(clinic, async () => {
-    if (!(await recvAccount(clinic.id))) return;
+  if (!clinic) { await bad(); return { received: true }; }
+  const res = await withClinic(clinic, async () => {
+    if (!(await recvAccount(clinic.id))) return 'bad';
     // nunca confia no corpo da notificação: busca o pagamento na API com o token da clínica
-    const p = await mp.sellerRequest(await recvToken(clinic.id), 'GET', `/v1/payments/${id}`);
+    let p;
+    try { p = await mp.sellerRequest(await recvToken(clinic.id), 'GET', `/v1/payments/${id}`); } catch (e) { return e; }
+    if (!String(p.external_reference || '').startsWith(`fg-${clinic.id}-`)) return 'bad';
     await registerMpPayment(clinic, p);
+    return 'ok';
   });
+  if (res === 'bad') await bad();
+  else if (res instanceof Error) { await bad(); throw res; }
   return { received: true };
 }, { public: true, webhook: true, raw: true });
 
