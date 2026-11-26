@@ -3,6 +3,14 @@ import { h, icon, toast, confirmDialog, fmtDT } from '../ui.js';
 import { get, post, put } from '../api.js';
 
 const LABEL = { 48: '48 horas antes', 24: '24 horas antes', 3: '3 horas antes', 1: '1 hora antes' };
+// ícones estáticos (conteúdo fixo, sem dados do usuário)
+const AVATAR_SVG = '<svg viewBox="0 0 24 24" width="30" height="30" fill="#fff" aria-hidden="true"><circle cx="12" cy="8" r="4.2"/><path d="M3.8 20.5c.7-4.1 4.1-6.6 8.2-6.6s7.5 2.5 8.2 6.6c.1.5-.3.9-.8.9H4.6c-.5 0-.9-.4-.8-.9z"/></svg>';
+const CHECK_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+// +55 (11) 99999-0000
+function fmtPhone(d) {
+  const m = String(d).match(/^55(\d{2})(\d{4,5})(\d{4})$/);
+  return m ? `+55 (${m[1]}) ${m[2]}-${m[3]}` : `+${d}`;
+}
 let poll = null;
 const stopPoll = () => { if (poll) { clearTimeout(poll); poll = null; } };
 
@@ -40,15 +48,18 @@ function connectionCard(st, body) {
     try { showQr(await post('/whatsapp/connect')); } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
   };
   if (st.connected) {
+    const since = st.connected_at ? new Date(st.connected_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
     area.append(
-      h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '12px', alignItems: 'center' } },
-        h('span', { class: 'badge green' }, 'Conectado'),
-        h('span', null, st.phone ? `Número: +${st.phone}` : 'WhatsApp da clínica conectado'),
-        st.connected_at ? h('small', { class: 'help' }, `desde ${new Date(st.connected_at).toLocaleString('pt-BR')}`) : null),
-      h('div', null, h('button', { class: 'btn sm ghost', style: { color: 'var(--danger)' }, onclick: async () => {
-        if (!(await confirmDialog('Desconectar o WhatsApp da clínica? Os lembretes param de ser enviados até conectar de novo.', { okLabel: 'Desconectar', danger: true }))) return;
-        try { await post('/whatsapp/disconnect'); toast('WhatsApp desconectado'); reload(); } catch (e) { toast(e.message, 'error'); }
-      } }, 'Desconectar')));
+      h('div', { class: 'wa-connected' },
+        h('div', { class: 'wa-avatar', html: AVATAR_SVG }, h('span', { class: 'wa-check', html: CHECK_SVG, title: 'Verificado' })),
+        h('div', { class: 'wa-info' },
+          h('div', { class: 'wa-status' }, h('span', { class: 'wa-dot' }), 'Conectado'),
+          h('div', { class: 'wa-phone' }, st.phone ? fmtPhone(st.phone) : 'WhatsApp da clínica'),
+          since ? h('small', { class: 'help' }, `Conectado desde ${since}`) : null),
+        h('button', { class: 'btn sm ghost wa-disconnect', onclick: async () => {
+          if (!(await confirmDialog('Desconectar o WhatsApp da clínica? Os lembretes param de ser enviados até conectar de novo.', { okLabel: 'Desconectar', danger: true }))) return;
+          try { await post('/whatsapp/disconnect'); toast('WhatsApp desconectado'); reload(); } catch (e) { toast(e.message, 'error'); }
+        } }, 'Desconectar')));
   } else {
     const btn = h('button', { class: 'btn primary', onclick: (e) => connect(e.currentTarget) }, st.state === 'close' ? 'Reconectar WhatsApp' : 'Conectar WhatsApp');
     if (st.state === 'close') area.append(h('div', { class: 'notice' }, icon('shield'), h('div', null, 'A conexão com o WhatsApp caiu (o celular foi desconectado ou ficou muito tempo sem internet). Escaneie o QR Code de novo.')));

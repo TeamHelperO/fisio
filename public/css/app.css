@@ -388,3 +388,13 @@ textarea.input { resize: vertical; min-height: 64px; }
 .progress-fill { height: 100%; width: 0; background: #6366f1; transition: width .3s; }
 .ev .ev-pay { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 6px; font-size: 10.5px; font-weight: 700; background: rgba(255,255,255,.85); }
 .ev .ev-pay.green { color: #15803d; } .ev .ev-pay.amber { color: #b45309; } .ev .ev-pay.gray { color: #475569; } .ev .ev-pay.blue { color: #1d4ed8; }
+
+/* WhatsApp conectado (Configurações → WhatsApp) */
+.wa-connected { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 14px 16px; border: 1px solid #c8ecd5; background: linear-gradient(135deg, #f0fbf4, #fff); border-radius: 12px; }
+.wa-avatar { position: relative; width: 56px; height: 56px; flex: none; border-radius: 50%; background: #25d366; display: grid; place-items: center; box-shadow: 0 4px 12px rgba(37,211,102,.35); }
+.wa-check { position: absolute; right: -2px; bottom: -2px; width: 22px; height: 22px; border-radius: 50%; background: #128c7e; border: 2px solid #fff; display: grid; place-items: center; }
+.wa-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.wa-status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: #128c7e; font-size: 13px; }
+.wa-dot { width: 8px; height: 8px; border-radius: 50%; background: #25d366; box-shadow: 0 0 0 3px rgba(37,211,102,.2); }
+.wa-phone { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: .2px; }
+.wa-disconnect { color: var(--danger) !important; margin-left: auto; }
