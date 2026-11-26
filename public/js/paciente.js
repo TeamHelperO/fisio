@@ -242,7 +242,9 @@ async function main() {
     h('div', { class: 'stack' }, x.items.map((it, i) => h('details', { class: 'pt-ex' },
       h('summary', null, h('span', { class: 'pt-exn' }, i + 1), h('div', { class: 'grow' }, h('b', null, it.name), dose(it) ? h('div', { class: 'pt-sub' }, dose(it)) : null)),
       h('div', { class: 'pt-exbody' },
-        it.media_url && isImage(it.media_url) ? h('img', { src: it.media_url, alt: it.name, loading: 'lazy', referrerpolicy: 'no-referrer' }) : null,
+        // imagem de site fora da lista permitida (segurança) não carrega: vira um link
+        it.media_url && isImage(it.media_url) ? h('img', { src: it.media_url, alt: it.name, loading: 'lazy', referrerpolicy: 'no-referrer',
+          onerror: (e) => e.target.replaceWith(h('a', { class: 'btn sm', href: it.media_url, target: '_blank', rel: 'noopener noreferrer' }, 'Ver imagem')) }) : null,
         it.steps?.length ? h('ol', null, it.steps.map((st) => h('li', null, st))) : null,
         it.notes ? h('div', { class: 'pt-warn' }, h('b', null, 'Atenção: '), it.notes) : null,
         it.media_url && !isImage(it.media_url) ? h('a', { class: 'btn sm', href: it.media_url, target: '_blank', rel: 'noopener noreferrer' }, 'Ver vídeo') : null)))),
