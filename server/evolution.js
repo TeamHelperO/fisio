@@ -9,6 +9,16 @@ const EVENTS = ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'];
 const enabled = () => !!(config.get('EVOLUTION_URL') && config.get('EVOLUTION_API_KEY'));
 const base = () => config.get('EVOLUTION_URL').replace(/\/+$/, '');
 
+// motivo legível para falhas de rede (o servidor da plataforma não alcançou o endereço da Evolution)
+function netReason(code) {
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'o endereço não existe (domínio não encontrado). Confira o EVOLUTION_URL no painel administrativo.';
+  if (code === 'ECONNREFUSED') return 'o servidor recusou a conexão (a Evolution está desligada ou a porta está errada).';
+  if (code === 'TimeoutError' || code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'ETIMEDOUT') return 'o servidor não respondeu (firewall bloqueando a porta ou endereço só acessível na rede local).';
+  if (/CERT|SSL|TLS|SELF_SIGNED/i.test(code)) return 'o certificado HTTPS do servidor é inválido. Use um certificado válido (ex.: Let\'s Encrypt).';
+  if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET') return 'a conexão foi interrompida (confira se o endereço usa http ou https corretamente).';
+  return `falha de rede (${code || 'desconhecida'}). Confira o EVOLUTION_URL no painel administrativo.`;
+}
+
 async function call(method, path, body, { quiet = false } = {}) {
   if (!enabled()) throw new HttpError(503, 'O WhatsApp ainda não foi configurado na plataforma.');
   let res;
@@ -18,8 +28,9 @@ async function call(method, path, body, { quiet = false } = {}) {
       body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(15000),
     });
   } catch (e) {
-    console.error('Evolution', method, path, e.message);
-    throw new HttpError(502, 'Não foi possível falar com o servidor do WhatsApp. Tente novamente em instantes.');
+    const code = e.cause?.code || e.name || '';
+    console.error('Evolution', method, path, e.message, code, e.cause?.message || '');
+    throw new HttpError(502, `Não foi possível falar com o servidor do WhatsApp: ${netReason(code)}`);
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
