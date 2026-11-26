@@ -201,7 +201,7 @@ Declaro que li, compreendi e concordo com os termos acima.`,
 };
 async function getSettings() {
   const out = { ...DEFAULT_SETTINGS };
-  for (const r of await q.all('SELECT key, value FROM settings')) out[r.key] = r.value;
+  for (const r of await q.all("SELECT key, value FROM settings WHERE key NOT LIKE 'tour_done_u%'")) out[r.key] = r.value;
   const c = als.getStore()?.clinic;
   if (c) out.timezone = c.timezone;
   return out;
@@ -436,7 +436,13 @@ route('POST', '/api/logout', async (ctx) => {
   return { ok: true };
 }, { always: true });
 
-route('GET', '/api/me', async (ctx) => ({ user: { ...ctx.user, email_verified: await emailVerified(ctx.clinic.id, ctx.user.id) }, settings: await getSettings(), clinic: clinicInfo(ctx.clinic) }));
+route('GET', '/api/me', async (ctx) => ({ user: { ...ctx.user, email_verified: await emailVerified(ctx.clinic.id, ctx.user.id),
+  tour_done: !!(await q.get('SELECT 1 FROM settings WHERE key=?', `tour_done_u${ctx.user.id}`)) }, settings: await getSettings(), clinic: clinicInfo(ctx.clinic) }));
+// tutorial do primeiro acesso: concluído ou pulado (não aparece mais para este usuário)
+route('POST', '/api/me/tour', async (ctx) => {
+  await q.run("INSERT INTO settings(key,value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING", `tour_done_u${ctx.user.id}`, new Date().toISOString());
+  return { ok: true };
+}, { always: true });
 
 route('GET', '/api/me/marketing', async (ctx) => {
   const r = await q.get('SELECT opt_in FROM saas.marketing_contacts WHERE email=?', ctx.user.email);

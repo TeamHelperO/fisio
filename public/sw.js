@@ -1,13 +1,13 @@
 // Service worker do FisioGestão (PWA).
 // Guarda apenas a "casca" do aplicativo (HTML, CSS, JS e ícones) para abrir rápido e funcionar como app instalado.
 // Dados de pacientes e respostas da API NUNCA são guardados no aparelho (/api/* passa direto pela rede).
-const VERSION = 'fisio-v15';
+const VERSION = 'fisio-v16';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/favicon.svg', '/manifest.webmanifest',
   '/icons/icon-192.png', '/icons/icon-512.png',
   '/js/app.js', '/js/api.js', '/js/ui.js', '/js/state.js', '/js/charts.js', '/js/schemas.js', '/js/pwa.js',
   '/js/pages/dashboard.js', '/js/pages/patients.js', '/js/pages/records.js', '/js/pages/agenda.js',
-  '/js/pages/finance.js', '/js/pages/reports.js', '/js/pages/settings.js', '/js/pages/exercises.js', '/js/pages/signatures.js', '/js/pages/paylink.js', '/js/pages/portal.js', '/js/pages/whatsapp.js',
+  '/js/pages/finance.js', '/js/pages/reports.js', '/js/pages/settings.js', '/js/pages/exercises.js', '/js/pages/signatures.js', '/js/pages/paylink.js', '/js/pages/portal.js', '/js/pages/whatsapp.js', '/js/tour.js',
 ];
 
 self.addEventListener('install', (event) => {

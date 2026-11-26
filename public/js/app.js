@@ -268,6 +268,7 @@ const ROUTES = [
 ];
 
 let renderSeq = 0;
+let tourShown = false;
 async function router() {
   if (!state.user) return;
   if (!shell) buildShell();
@@ -289,6 +290,8 @@ async function router() {
     await r[1]()(view, params, new URLSearchParams(query || ''));
     if (seq !== renderSeq) return;
     c.replaceChildren(view); window.scrollTo(0, 0);
+    // tutorial guiado: só no primeiro acesso de cada usuário
+    if (!DEMO && state.user && state.user.tour_done === false && !tourShown) { tourShown = true; import('./tour.js').then((m) => m.startTour()).catch(() => {}); }
   } catch (err) {
     if (seq !== renderSeq) return;
     console.error(err);

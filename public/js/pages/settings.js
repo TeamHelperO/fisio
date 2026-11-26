@@ -89,7 +89,10 @@ async function seguranca(body) {
           'Registro de acessos e alterações (auditoria) com histórico de versões dos registros clínicos', 'Dados de cada clínica isolados em área própria do banco, com chave de criptografia própria', 'Cópias de segurança diárias do banco de dados + cópia criptografada antes de excluir pacientes',
           'Proteções contra XSS, CSRF e clickjacking (cabeçalhos de segurança)'].map((t) => h('li', null, t)))))),
     h('div', { class: 'card', style: { marginTop: '16px' } }, h('div', { class: 'card-head' }, h('h2', null, 'Comunicação')), h('div', { class: 'card-body' },
-      h('label', { class: 'terms-check', style: { color: 'var(--text)', fontSize: '14px' } }, mkBox, h('span', null, 'Receber novidades, dicas e ofertas do FisioGestão por e-mail. ', h('small', null, 'Avisos sobre a sua conta e a assinatura continuam sendo enviados.'))))));
+      h('label', { class: 'terms-check', style: { color: 'var(--text)', fontSize: '14px' } }, mkBox, h('span', null, 'Receber novidades, dicas e ofertas do FisioGestão por e-mail. ', h('small', null, 'Avisos sobre a sua conta e a assinatura continuam sendo enviados.'))))),
+    h('div', { class: 'card', style: { marginTop: '16px' } }, h('div', { class: 'card-head' }, h('h2', null, 'Tutorial')), h('div', { class: 'card-body row', style: { flexWrap: 'wrap', gap: '12px' } },
+      h('span', { class: 'grow' }, 'Rever o tour pelas principais telas do sistema.'),
+      h('button', { class: 'btn', onclick: () => import('../tour.js').then((m) => m.startTour()) }, 'Ver tutorial'))));
 }
 
 async function lgpd(body) {
