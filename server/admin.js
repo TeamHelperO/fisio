@@ -47,9 +47,12 @@ module.exports = function registerAdmin(deps) {
       [ctx.admin?.id ?? null, ctx.admin?.name ?? null, action, target ?? null, details ? JSON.stringify(details).slice(0, 2000) : null, ctx.ip]);
   }
   // Registra rota protegida: exige administrador logado
+  // sem a verificação em duas etapas ativa, o administrador só acessa o necessário para ativá-la
+  const NO_2FA_OK = new Set(['GET /api/admin/me', 'GET /api/admin/2fa', 'POST /api/admin/2fa/setup', 'POST /api/admin/2fa/enable', 'POST /api/admin/logout']);
   const adminRoute = (method, path, fn) => route(method, path, async (ctx) => {
     ctx.admin = await currentAdmin(ctx);
     if (!ctx.admin) throw new HttpError(401, 'Sessão de administrador expirada. Entre novamente.');
+    if (!ctx.admin.totp_enabled && !NO_2FA_OK.has(`${method} ${path}`)) throw new HttpError(403, 'Ative a verificação em duas etapas para usar o painel administrativo.');
     return fn(ctx);
   }, { public: true, always: true });
 

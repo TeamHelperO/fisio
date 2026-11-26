@@ -156,8 +156,7 @@ function buildShell() {
     h('div', { class: 'main' },
       h('header', { class: 'topbar' }, h('button', { class: 'icon-btn', 'aria-label': 'Abrir menu', onclick: () => app.classList.toggle('menu-open') }, icon('menu', 22)), h('b', null, 'Administração')),
       h('div', { class: 'billing-banner admin-banner' }, icon('shield', 16), h('span', null, 'Área da plataforma: dados de conta e assinatura apenas. Prontuários e cadastros de pacientes não são acessíveis aqui.')),
-      me.totp_enabled ? null : h('div', { class: 'billing-banner warn' }, icon('alert', 16), h('span', null, h('b', null, 'Proteja sua conta: '), 'ative a verificação em duas etapas. Mesmo que alguém descubra sua senha, não consegue entrar sem o código do seu celular.'),
-        h('a', { class: 'btn sm', href: '#/admins' }, 'Ativar agora')),
+      me.totp_enabled ? null : h('div', { class: 'billing-banner warn' }, icon('alert', 16), h('span', null, h('b', null, 'Proteja sua conta: '), 'a verificação em duas etapas é obrigatória. Ative abaixo para liberar o painel.')),
       content));
   root.replaceChildren(app);
   shell = { nav, content };
@@ -171,6 +170,14 @@ async function router() {
   const page = location.hash.replace(/^#\/?/, '').split('?')[0] || 'dashboard';
   shell.nav.querySelectorAll('a').forEach((a) => a.classList.toggle('active', a.dataset.path === page));
   const fn = PAGES[page]; const c = shell.content; const my = ++seq;
+  if (!me.totp_enabled) {
+    c.replaceChildren(loading());
+    try {
+      const card2fa = await securityCard();
+      if (my === seq) c.replaceChildren(h('div', null, head('Ative a verificação em duas etapas', 'Obrigatória para todos os administradores da plataforma. Depois de ativar, o painel é liberado.'), card2fa));
+    } catch (e) { if (my === seq) c.replaceChildren(h('div', { class: 'notice' }, icon('alert'), e.message || 'Erro ao carregar')); }
+    return;
+  }
   if (!fn) { c.replaceChildren(empty('Página não encontrada.')); return; }
   c.replaceChildren(loading());
   const view = h('div');
