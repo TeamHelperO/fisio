@@ -828,17 +828,26 @@ async function syncCharge(ctx, apptId) {
       a.patient_id, a.professional_id, a.price > 0 ? rest : ch.amount, ch.id);
   }
 }
-// Pagamento informado no agendamento: 'depois' (cobra ao realizar), 'sinal' (50% agora) ou 'pago' (tudo agora)
+// Pagamento informado no agendamento: 'depois' (cobra ao realizar), 'sinal' (recebeu uma parte, no valor informado) ou 'pago' (tudo agora)
 const PAY_OPTIONS = ['depois', 'sinal', 'pago', 'link_sinal', 'link_total'];
 const isLink = (p) => p === 'link_sinal' || p === 'link_total';
+// valor da parte (sinal) informado na tela; sem valor (versão antiga da tela) vale metade
+function partAmount(ctx, price) {
+  const raw = ctx.body.payment_amount;
+  if (raw === undefined || raw === null || raw === '') return cents(price / 2);
+  const v = cents(num(raw, 'Valor recebido'));
+  if (v <= 0) throw new HttpError(400, 'Informe o valor recebido');
+  if (v > price + 0.001) throw new HttpError(400, 'O valor informado é maior que o valor do atendimento');
+  return v;
+}
 async function applyPayment(ctx, apptId, payment, method) {
   if (!payment || payment === 'depois' || isLink(payment)) return;
   const a = await q.get('SELECT * FROM appointments WHERE id=?', apptId);
   if (!(a.price > 0)) throw new HttpError(400, 'Informe o valor do atendimento para registrar o pagamento');
   if (!METHODS.includes(method)) throw new HttpError(400, 'Informe a forma de pagamento');
-  const target = payment === 'sinal' ? cents(a.price / 2) : a.price;
   const ch = a.charge_id ? await q.get('SELECT * FROM charges WHERE id=?', a.charge_id) : null;
   const paid = Number((await q.get("SELECT COALESCE(SUM(amount),0) t FROM charges WHERE appointment_id=? AND status='pago'", a.id)).t) || 0;
+  const target = payment === 'sinal' ? Math.min(a.price, cents(paid + partAmount(ctx, a.price))) : a.price;
   let need = cents(target - paid);
   if (need <= 0) return;
   const day = today();
@@ -850,7 +859,7 @@ async function applyPayment(ctx, apptId, payment, method) {
     if (need <= 0) return;
   }
   const [y, m, d] = a.start.slice(0, 10).split('-');
-  const desc = payment === 'sinal' && paid === 0 ? `Sinal (50%) — atendimento de ${d}/${m}/${y}` : `Pagamento antecipado — atendimento de ${d}/${m}/${y}`;
+  const desc = need >= a.price ? `Pagamento antecipado — atendimento de ${d}/${m}/${y}` : paid === 0 ? `Sinal — atendimento de ${d}/${m}/${y}` : `Pagamento parcial — atendimento de ${d}/${m}/${y}`;
   const r = await q.run("INSERT INTO charges(patient_id, professional_id, description, amount, due_date, status, paid_at, method, receipt_number, appointment_id, created_by) VALUES (?,?,?,?,?,'pago',?,?,?,?,?)",
     a.patient_id, a.professional_id, desc, need, day, day, method, await nextReceipt(day), a.id, ctx.user.id);
   await audit(ctx, 'registrou_pagamento', 'charge', Number(r.lastInsertRowid), a.patient_id, { amount: need, method, agendamento: a.id, tipo: payment });
@@ -1994,14 +2003,14 @@ async function payLinkFor(ctx, chargeId) {
   await audit(ctx, 'gerou_link_pagamento', 'charge', c.id, c.patient_id, { valor: c.amount, taxa_plataforma: fee });
   return { charge_id: c.id, url: r.init_point, amount: c.amount, fee, description: c.description, patient };
 }
-// cobrança pendente para o link do agendamento (sinal de 50% ou o que falta do total)
+// cobrança pendente para o link do agendamento (uma parte, no valor informado, ou o que falta do total)
 async function linkChargeForAppointment(ctx, apptId, kind) {
   const a = await q.get('SELECT * FROM appointments WHERE id=?', apptId);
   if (!(a.price > 0)) throw new HttpError(400, 'Informe o valor do atendimento para enviar o link de pagamento');
   const ch = a.charge_id ? await q.get('SELECT * FROM charges WHERE id=?', a.charge_id) : null;
   if (kind === 'link_total' && ch && ch.status === 'pendente') return ch.id; // já realizado: o link é da cobrança do restante
-  const target = kind === 'link_sinal' ? cents(a.price / 2) : a.price;
-  const launched = Number((await q.get("SELECT COALESCE(SUM(amount),0) t FROM charges WHERE appointment_id=? AND status<>'cancelado'", a.id)).t) || 0;
+  const launched = Number((await q.get("SELECT COALESCE(SUM(amount),0) t FROM charges WHERE appointment_id=? AND status<>'cancelado' AND NOT (id=? AND status='pendente')", a.id, a.charge_id || 0)).t) || 0;
+  const target = kind === 'link_sinal' ? Math.min(a.price, cents(launched + partAmount(ctx, a.price))) : a.price;
   const need = cents(target - launched);
   if (need <= 0) {
     const open = await q.get("SELECT id FROM charges WHERE appointment_id=? AND status='pendente' ORDER BY id DESC LIMIT 1", a.id);
@@ -2010,7 +2019,7 @@ async function linkChargeForAppointment(ctx, apptId, kind) {
   }
   const paidBefore = await paidOf(a.id);
   const [y, m, d] = a.start.slice(0, 10).split('-');
-  const desc = kind === 'link_sinal' && launched === 0 ? `Sinal (50%) — atendimento de ${d}/${m}/${y}` : paidBefore > 0 ? `Restante do atendimento de ${d}/${m}/${y}` : `Atendimento de fisioterapia — ${d}/${m}/${y}`;
+  const desc = need < a.price && launched === 0 ? `Sinal — atendimento de ${d}/${m}/${y}` : paidBefore > 0 ? `Restante do atendimento de ${d}/${m}/${y}` : `Atendimento de fisioterapia — ${d}/${m}/${y}`;
   const r = await q.run('INSERT INTO charges(patient_id, professional_id, description, amount, due_date, appointment_id, created_by) VALUES (?,?,?,?,?,?,?)',
     a.patient_id, a.professional_id, desc, need, a.start.slice(0, 10) < today() ? today() : a.start.slice(0, 10), a.id, ctx.user.id);
   await syncCharge(ctx, a.id);

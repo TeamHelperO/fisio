@@ -9,7 +9,7 @@ export function payState(a) {
   const paid = Number(a.paid_total) || 0; const price = Number(a.price) || 0;
   if (!price && !paid) return null;
   if (paid >= price && paid > 0) return { cls: 'green', label: 'Pago', short: 'Pago' };
-  if (paid > 0) return { cls: 'amber', label: `${money(paid)} pago de ${money(price)}`, short: paid * 2 === price ? '50% pago' : 'Parcial' };
+  if (paid > 0) return { cls: 'amber', label: `${money(paid)} pago de ${money(price)}`, short: `${money(paid)} pago` };
   if (a.pay_link_charge) return { cls: 'blue', label: 'Link de pagamento enviado', short: 'Link enviado' };
   return { cls: 'gray', label: 'A pagar', short: 'A pagar' };
 }
@@ -43,32 +43,39 @@ export async function appointmentModal(appt = {}, onSaved = () => {}) {
       h('option', { value: '' }, 'Preencher valor a partir de um serviço…'), activeServices.map((s) => h('option', { value: s.id }, `${s.name} — ${money(s.price)}`)));
     form.insertBefore(h('label', { class: 'field span-all' }, h('span', null, 'Serviço (opcional)'), svc), form.children[1]);
   }
-  // ---- pagamento: depois do atendimento, sinal de 50% ou tudo pago agora ----
+  // ---- pagamento: depois do atendimento, uma parte agora (valor livre) ou tudo pago agora ----
   const paid = Number(appt.paid_total) || 0;
   const price = () => Number(form.inputs.price.value) || 0;
   const payOpts = paid > 0
-    ? [['depois', 'Restante será pago depois'], ['pago', 'Pagou o restante agora'], ...(recv.connected ? [['link_total', 'Enviar link do Mercado Pago — restante']] : [])]
-    : [['depois', 'Vai pagar depois do atendimento'], ['sinal', 'Pagou 50% agora (sinal)'], ['pago', 'Já pagou o valor total'],
-      ...(recv.connected ? [['link_sinal', 'Enviar link do Mercado Pago — 50% (sinal)'], ['link_total', 'Enviar link do Mercado Pago — valor total']] : [])];
+    ? [['depois', 'Restante será pago no atendimento'], ['sinal', 'Recebeu mais uma parte agora'], ['pago', 'Pagou o restante agora'],
+      ...(recv.connected ? [['link_sinal', 'Enviar link do Mercado Pago — uma parte'], ['link_total', 'Enviar link do Mercado Pago — restante']] : [])]
+    : [['depois', 'Vai pagar no dia do atendimento'], ['sinal', 'Recebeu uma parte agora (sinal)'], ['pago', 'Já pagou o valor total'],
+      ...(recv.connected ? [['link_sinal', 'Enviar link do Mercado Pago — uma parte (sinal)'], ['link_total', 'Enviar link do Mercado Pago — valor total']] : [])];
   const paySel = h('select', { class: 'input', name: 'payment' }, payOpts.map(([v, l]) => h('option', { value: v }, l)));
   const methodSel = h('select', { class: 'input', name: 'payment_method' }, h('option', { value: '' }, 'Selecione…'), Object.entries(LABELS.method).map(([v, l]) => h('option', { value: v }, l)));
   const payInfo = h('small', { class: 'help' });
+  const amountInput = h('input', { class: 'input', type: 'number', name: 'payment_amount', min: '0.01', step: '0.01', placeholder: 'Ex.: 50,00' });
+  const amountLabel = h('span', null, 'Valor recebido (R$)');
+  const amountField = h('label', { class: 'field' }, amountLabel, amountInput);
   const methodField = h('label', { class: 'field' }, h('span', null, 'Forma de pagamento', h('b', { class: 'req' }, ' *')), methodSel);
   const payStatus = paid > 0 ? h('div', { class: 'notice info span-all' }, icon('check'), h('span', null, paid >= (Number(appt.price) || 0) ? `Pago: ${money(paid)} (valor total).` : `Já pago: ${money(paid)} de ${money(appt.price)}. Falta ${money((Number(appt.price) || 0) - paid)}.`)) : null;
   const updPay = () => {
     const v = paySel.value; const pr = price();
     methodField.style.display = ['sinal', 'pago'].includes(v) ? '' : 'none';
-    const half = Math.round(pr * 50) / 100;
+    amountField.style.display = ['sinal', 'link_sinal'].includes(v) ? '' : 'none';
+    amountLabel.replaceChildren(v === 'link_sinal' ? 'Valor do link (R$)' : 'Valor recebido (R$)', h('b', { class: 'req' }, ' *'));
+    const part = Number(amountInput.value) || 0; const left = Math.max(0, pr - paid);
     payInfo.textContent = v === 'depois' ? (paid > 0 ? 'O restante vira cobrança ao marcar como "Realizado".' : 'A cobrança é gerada ao marcar como "Realizado".')
-      : v === 'sinal' ? `Registra agora ${money(Math.round(pr * 50) / 100)} pago, com recibo. O restante (${money(pr - Math.round(pr * 50) / 100)}) vira cobrança ao realizar o atendimento.`
+      : v === 'sinal' ? (part > 0 ? `Registra agora ${money(Math.min(part, left))} pago, com recibo. ${part < left ? `O restante (${money(left - part)}) é cobrado no atendimento.` : 'Nada fica para cobrar depois.'}` : 'Informe quanto o paciente pagou agora. O restante é cobrado no atendimento.')
       : v === 'pago' ? `Registra agora ${money(Math.max(0, pr - paid))} pago, com recibo. Nada fica para cobrar depois.`
-      : `Gera um link de ${money(v === 'link_sinal' ? half : Math.max(0, pr - paid))} para o paciente pagar com Pix ou cartão. Quando ele pagar, fica registrado sozinho, com recibo.${recv.fee_pct ? '' : ''}`;
+      : v === 'link_sinal' && !(part > 0) ? 'Informe o valor do link. O restante é cobrado no atendimento.'
+      : `Gera um link de ${money(v === 'link_sinal' ? Math.min(part, left) : left)} para o paciente pagar com Pix ou cartão. Quando ele pagar, fica registrado sozinho, com recibo.`;
     if (isNew && Number(form.inputs.repeat_weeks?.value) > 1 && v !== 'depois') payInfo.textContent += ' Vale só para o primeiro atendimento da série.';
   };
-  paySel.addEventListener('change', updPay); form.inputs.price.addEventListener('input', updPay); form.inputs.repeat_weeks?.addEventListener('change', updPay);
+  paySel.addEventListener('change', updPay); amountInput.addEventListener('input', updPay); form.inputs.price.addEventListener('input', updPay); form.inputs.repeat_weeks?.addEventListener('change', updPay);
   const fullyPaid = paid > 0 && paid >= (Number(appt.price) || 0);
-  form.append(h('h4', { class: 'form-section span-all' }, 'Pagamento'), payStatus,
-    fullyPaid ? null : h('label', { class: 'field' }, h('span', null, 'Situação do pagamento'), paySel, payInfo), fullyPaid ? null : methodField);
+  form.append(...[h('h4', { class: 'form-section span-all' }, 'Pagamento'), payStatus,
+    fullyPaid ? null : h('label', { class: 'field span-all' }, h('span', null, 'Situação do pagamento'), paySel, payInfo), fullyPaid ? null : amountField, fullyPaid ? null : methodField].filter(Boolean));
   updPay();
   // ao escolher paciente, sugere o profissional responsável
   form.inputs.patient_id.addEventListener('change', () => {
@@ -81,8 +88,10 @@ export async function appointmentModal(appt = {}, onSaved = () => {}) {
     const v = { ...form.getValues(), ...extra };
     const payment = fullyPaid ? 'depois' : paySel.value;
     if (payment !== 'depois' && !(Number(v.price) > 0)) return toast('Informe o valor do atendimento para registrar o pagamento', 'error');
+    if (['sinal', 'link_sinal'].includes(payment) && !(Number(amountInput.value) > 0)) return toast(payment === 'sinal' ? 'Informe o valor recebido' : 'Informe o valor do link', 'error');
+    if (['sinal', 'link_sinal'].includes(payment) && Number(amountInput.value) > Number(v.price) - paid + 0.001) return toast('O valor é maior do que falta pagar', 'error');
     if (['sinal', 'pago'].includes(payment) && !methodSel.value) return toast('Escolha a forma de pagamento', 'error');
-    const body = { patient_id: v.patient_id, professional_id: v.professional_id, start: `${v.date}T${v.time}`, duration: v.duration, kind: v.kind, status: v.status, price: v.price, notes: v.notes, repeat_weeks: v.repeat_weeks, payment, payment_method: methodSel.value, force };
+    const body = { patient_id: v.patient_id, professional_id: v.professional_id, start: `${v.date}T${v.time}`, duration: v.duration, kind: v.kind, status: v.status, price: v.price, notes: v.notes, repeat_weeks: v.repeat_weeks, payment, payment_method: methodSel.value, payment_amount: ['sinal', 'link_sinal'].includes(payment) ? amountInput.value : undefined, force };
     try {
       const r = isNew ? await post('/appointments', body) : await put(`/appointments/${appt.id}`, body);
       m.close(); toast(isNew ? (Number(v.repeat_weeks) > 1 ? `${v.repeat_weeks} atendimentos agendados` : 'Atendimento agendado') : 'Agendamento atualizado'); onSaved();
