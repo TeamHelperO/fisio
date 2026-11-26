@@ -77,6 +77,27 @@ module.exports = {
     const d = String(jid).split('@')[0].replace(/\D/g, '');
     return d || null;
   },
+  // foto de perfil do número conectado, baixada pelo servidor e devolvida como data: URL (só de servidores do WhatsApp)
+  async profilePhoto(name, number) {
+    let url = null;
+    const r = await call('GET', `/instance/fetchInstances?instanceName=${enc(name)}`, null, { quiet: true }).catch(() => null);
+    const it = Array.isArray(r) ? r[0] : r;
+    url = it?.profilePicUrl || it?.instance?.profilePictureUrl || null;
+    if (!url && number) {
+      const p = await call('POST', `/chat/fetchProfilePictureUrl/${enc(name)}`, { number }, { quiet: true }).catch(() => null);
+      url = p?.profilePictureUrl || null;
+    }
+    let u;
+    try { u = new URL(url); } catch { return null; }
+    if (u.protocol !== 'https:' || !/(^|\.)(whatsapp\.net|fbcdn\.net)$/.test(u.hostname)) return null;
+    try {
+      const res = await fetch(u, { signal: AbortSignal.timeout(8000) });
+      const type = res.headers.get('content-type') || '';
+      if (!res.ok || !/^image\/(jpeg|png|webp)$/.test(type.split(';')[0])) return null;
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.length && buf.length < 400 * 1024 ? `data:${type.split(';')[0]};base64,${buf.toString('base64')}` : null;
+    } catch { return null; }
+  },
   async remove(name) {
     await call('DELETE', `/instance/logout/${enc(name)}`, null, { quiet: true }).catch(() => {});
     await call('DELETE', `/instance/delete/${enc(name)}`, null, { quiet: true }).catch(() => {});

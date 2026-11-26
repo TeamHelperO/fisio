@@ -49,9 +49,14 @@ function connectionCard(st, body) {
   };
   if (st.connected) {
     const since = st.connected_at ? new Date(st.connected_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
+    const avatar = h('div', { class: 'wa-avatar', html: AVATAR_SVG }, h('span', { class: 'wa-check', html: CHECK_SVG, title: 'Verificado' }));
+    // foto do perfil do WhatsApp (se o número tiver uma e ela for pública)
+    get('/whatsapp/photo').then(({ photo }) => {
+      if (photo && /^data:image\/(jpeg|png|webp);base64,/.test(photo)) avatar.prepend(h('img', { class: 'wa-photo', src: photo, alt: 'Foto do perfil do WhatsApp' }));
+    }).catch(() => {});
     area.append(
       h('div', { class: 'wa-connected' },
-        h('div', { class: 'wa-avatar', html: AVATAR_SVG }, h('span', { class: 'wa-check', html: CHECK_SVG, title: 'Verificado' })),
+        avatar,
         h('div', { class: 'wa-info' },
           h('div', { class: 'wa-status' }, h('span', { class: 'wa-dot' }), 'Conectado'),
           h('div', { class: 'wa-phone' }, st.phone ? fmtPhone(st.phone) : 'WhatsApp da clínica'),

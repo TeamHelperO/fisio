@@ -140,6 +140,13 @@ module.exports = function whatsapp({ route, requireRole, audit, clinicAccess, AP
     if (a.state === 'open') await currentSql().unsafe("UPDATE saas.clinic_whatsapp SET state='close', updated_at=now() WHERE clinic_id=$1", [a.clinic_id]);
     return { state: 'connecting', ...(await evo.connect(a.instance)) };
   });
+  // foto de perfil do WhatsApp conectado (a tela carrega depois, sem atrasar o resto)
+  route('GET', '/api/whatsapp/photo', async (ctx) => {
+    requireRole(ctx.user, ['admin']);
+    const a = await account(ctx.clinic.id);
+    if (a?.state !== 'open') return { photo: null };
+    return { photo: await evo.profilePhoto(a.instance, a.phone).catch(() => null) };
+  });
   route('POST', '/api/whatsapp/disconnect', async (ctx) => {
     requireRole(ctx.user, ['admin']);
     const a = await account(ctx.clinic.id);
