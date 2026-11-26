@@ -113,10 +113,29 @@ function testCard(st) {
     btn.disabled = true;
     try { await post('/whatsapp/test', { phone: phone.value }); toast('Mensagem de teste enviada'); } catch (e) { toast(e.message, 'error'); } finally { btn.disabled = false; }
   } }, 'Enviar teste');
+  const result = h('div', { class: 'stack' });
+  const run = h('button', { class: 'btn primary', disabled: !st.connected, onclick: async () => {
+    run.disabled = true;
+    try {
+      const r = await post('/whatsapp/run');
+      const lines = [`${r.enviados} lembrete(s) enviado(s)${r.falhas ? `, ${r.falhas} com falha` : ''}.`];
+      if (r.desligado) lines.push('Os lembretes estão desligados: marque "Enviar lembretes de consulta pelo WhatsApp" e salve.');
+      if (r.nenhum_horario) lines.push('Nenhum horário de lembrete está ligado.');
+      if (r.horario_silencio) lines.push('Agora é entre 22h e 6h: nada é enviado nesse horário (dá para desligar essa opção).');
+      if (r.sem_celular) lines.push(`${r.sem_celular} consulta(s) de paciente sem celular válido no cadastro.`);
+      if (r.ja_enviado) lines.push(`${r.ja_enviado} consulta(s) já tinham recebido este lembrete.`);
+      if (r.fora_do_horario) lines.push(`${r.fora_do_horario} consulta(s) ainda não chegaram no horário do lembrete.`);
+      if (r.erros?.length) lines.push(`Erro: ${r.erros[0]}`);
+      if (!r.enviados && lines.length === 1) lines.push('Nenhuma consulta agendada dentro dos horários dos lembretes ligados.');
+      result.replaceChildren(...lines.map((l) => h('small', { class: 'help', style: { display: 'block' } }, l)));
+    } catch (e) { toast(e.message, 'error'); } finally { run.disabled = false; }
+  } }, 'Enviar lembretes agora');
   return h('div', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', null, 'Testar')),
     h('div', { class: 'card-body stack' },
       h('p', { style: { margin: 0 } }, 'Envia um lembrete de exemplo (salve as mensagens antes) para conferir como chega no celular.'),
-      h('div', { class: 'row', style: { flexWrap: 'wrap' } }, phone, btn)));
+      h('div', { class: 'row', style: { flexWrap: 'wrap' } }, phone, btn),
+      h('p', { style: { margin: '8px 0 0' } }, 'Os lembretes saem sozinhos a cada 5 minutos. Para disparar agora os que já estão no horário:'),
+      h('div', null, run), result));
 }
 
 async function logCard() {

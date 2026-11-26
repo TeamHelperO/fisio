@@ -6,7 +6,7 @@
 // envia o lembrete da menor antecedência ligada que já "venceu" — quem marca com 20 h de antecedência recebe só o de 24 h.
 // Cada (consulta, antecedência) é registrado em wa_reminders antes do envio, então nunca sai duas vezes.
 const crypto = require('crypto');
-const { sql, q, currentSql, withClinic, getClinic } = require('./core');
+const { sql, q, als, currentSql, withClinic, getClinic } = require('./core');
 const { HttpError } = require('./http');
 const evo = require('./evolution');
 
@@ -255,15 +255,19 @@ module.exports = function whatsapp({ route, requireRole, audit, clinicAccess, AP
 
   // ---------- envio dos lembretes ----------
   // Fase 1 (transação curta): reserva os lembretes devidos. Fase 2: envia fora da transação. Fase 3: grava o resultado.
-  async function sweepClinic(clinic, a, budget) {
+  // diag (opcional) recebe o motivo de cada consulta não lembrada — usado pelo botão "Enviar lembretes agora"
+  async function sweepClinic(clinic, a, budget, diag = null) {
     const tz = clinic.timezone || 'America/Sao_Paulo';
     const nowMs = Date.now();
-    const due = await withClinic(clinic, async () => {
+    // dentro de uma requisição da própria clínica já existe a transação: usa a mesma (evita abrir outra conexão)
+    const inClinic = (fn) => (als.getStore()?.clinic?.id === clinic.id ? fn() : withClinic(clinic, fn));
+    const note = (k) => { if (diag) diag[k] = (diag[k] || 0) + 1; };
+    const due = await inClinic(async () => {
       const cfg = await loadCfg();
-      if (!cfg.enabled) return [];
+      if (!cfg.enabled) { if (diag) diag.desligado = true; return []; }
       const on = OFFSETS.filter((h) => cfg.reminders[h].on).sort((x, y) => x - y);
-      if (!on.length) return [];
-      if (cfg.quiet) { const hr = Number(partsAt(nowMs, tz).hour); if (hr >= 22 || hr < 6) return []; }
+      if (!on.length) { if (diag) diag.nenhum_horario = true; return []; }
+      if (cfg.quiet) { const hr = Number(partsAt(nowMs, tz).hour); if (hr >= 22 || hr < 6) { if (diag) diag.horario_silencio = true; return []; } }
       const from = localAt(nowMs, tz); const to = localAt(nowMs + (Math.max(...on) * 3600e3) + 60e3, tz);
       const rows = await q.all(`SELECT a.id, a.start, a.status, p.name patient_name, p.phone, u.name professional_name FROM appointments a
         JOIN patients p ON p.id=a.patient_id LEFT JOIN users u ON u.id=a.professional_id
@@ -275,15 +279,15 @@ module.exports = function whatsapp({ route, requireRole, audit, clinicAccess, AP
         const left = (localToMs(ap.start, tz) - nowMs) / 3600e3;
         if (left <= 0) continue;
         const h = on.find((x) => x >= left); // menor antecedência ligada que já chegou
-        if (!h) continue;
+        if (!h) { note('fora_do_horario'); continue; }
         const number = waNumber(ap.phone);
-        if (!number) continue;
+        if (!number) { note('sem_celular'); continue; }
         const ask = cfg.reminders[h].ask && ap.status === 'agendado';
         const claim = await q.get(`INSERT INTO wa_reminders(appointment_id, offset_h, phone, phone_key, ask) VALUES (?,?,?,?,?)
           ON CONFLICT (appointment_id, offset_h) DO UPDATE SET status='enviando', attempts=wa_reminders.attempts+1, error=NULL
             WHERE wa_reminders.status='falhou' AND wa_reminders.attempts < 3
           RETURNING id`, ap.id, h, number, phoneKey(number), ask);
-        if (!claim) continue;
+        if (!claim) { note('ja_enviado'); continue; }
         const vars = apptVars(ap, base);
         out.push({ id: claim.id, number, text: `${render(cfg.reminders[h].text, vars)}${ask ? `\n\n${render(cfg.ask_text, vars)}` : ''}` });
       }
@@ -295,13 +299,14 @@ module.exports = function whatsapp({ route, requireRole, audit, clinicAccess, AP
       catch (e) { results.push({ id: m.id, ok: false, error: e.message }); }
     }
     if (results.length) {
-      await withClinic(clinic, async () => {
+      await inClinic(async () => {
         for (const r of results) {
           if (r.ok) await q.run("UPDATE wa_reminders SET status='enviado', jid=?, msg_id=?, sent_at=saas.now_local() WHERE id=?", r.jid, r.msg, r.id);
           else await q.run("UPDATE wa_reminders SET status='falhou', error=? WHERE id=?", String(r.error).slice(0, 300), r.id);
         }
       });
     }
+    if (diag) diag.erros = results.filter((r) => !r.ok).map((r) => r.error).slice(0, 3);
     return { sent: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length };
   }
   async function sweep({ maxMessages = 80, deadlineMs = 20000 } = {}) {
@@ -320,6 +325,17 @@ module.exports = function whatsapp({ route, requireRole, audit, clinicAccess, AP
     }
     return out;
   }
+
+  // botão "Enviar lembretes agora": roda só para esta clínica e explica o resultado
+  route('POST', '/api/whatsapp/run', async (ctx) => {
+    requireRole(ctx.user, ['admin']);
+    const a = await account(ctx.clinic.id);
+    if (a?.state !== 'open') throw new HttpError(400, 'Conecte o WhatsApp da clínica primeiro.');
+    await checkRate(`warun|${ctx.clinic.id}`); await failRate(`warun|${ctx.clinic.id}`, 20, 60);
+    const diag = {};
+    const r = await sweepClinic(ctx.clinic, a, 40, diag);
+    return { enviados: r.sent, falhas: r.failed, ...diag };
+  });
 
   return { sweep };
 };

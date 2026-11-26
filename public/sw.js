@@ -1,7 +1,7 @@
 // Service worker do FisioGestão (PWA).
 // Guarda apenas a "casca" do aplicativo (HTML, CSS, JS e ícones) para abrir rápido e funcionar como app instalado.
 // Dados de pacientes e respostas da API NUNCA são guardados no aparelho (/api/* passa direto pela rede).
-const VERSION = 'fisio-v11';
+const VERSION = 'fisio-v12';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/favicon.svg', '/manifest.webmanifest',
   '/icons/icon-192.png', '/icons/icon-512.png',
