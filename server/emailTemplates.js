@@ -128,10 +128,10 @@ const DEFAULTS = {
   },
   pagamento_link: {
     group: 'Pagamentos pelo app', optional: true, name: 'Link de pagamento (para o paciente)',
-    when: 'Enviado ao paciente quando a clínica manda o link do Mercado Pago por e-mail.',
+    when: 'Enviado ao paciente quando a clínica manda o link de pagamento (Pix) por e-mail.',
     vars: { nome: 'Nome do paciente', clinica: 'Nome da clínica', descricao: 'Descrição da cobrança', valor: 'Valor (ex.: R$ 150,00)', validade: 'Validade do link' }, link: true,
     subject: 'Pagamento — {{clinica}}',
-    body: 'Olá, {{nome}}!\n\nSegue o link para pagar "{{descricao}}", no valor de {{valor}}, com Pix ou cartão pelo Mercado Pago.\n\nO link vale por {{validade}}. Assim que o pagamento for aprovado, a clínica recebe a confirmação automaticamente.',
+    body: 'Olá, {{nome}}!\n\nSegue o link para pagar "{{descricao}}", no valor de {{valor}}, com Pix.\n\nO link vale {{validade}}. Assim que o pagamento for aprovado, a clínica recebe a confirmação automaticamente.',
     button: 'Pagar agora',
   },
   pagamento_recebido: {

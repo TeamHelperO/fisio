@@ -1,4 +1,4 @@
-// Recebimentos pelo app: link de pagamento do Mercado Pago para o paciente pagar com Pix ou cartão
+// Recebimentos pelo app: link para o paciente pagar com Pix numa página do FisioGestão (o dinheiro cai na conta do Mercado Pago da clínica)
 import { h, icon, toast, modal, money } from '../ui.js';
 import { get, post } from '../api.js';
 
@@ -19,7 +19,7 @@ export async function requestPayLink(chargeId) {
 // janela para compartilhar o link (copiar, WhatsApp, e-mail) e conferir se já foi pago
 export function payLinkModal(link) {
   const p = link.patient || {};
-  const msg = `Olá, ${(p.name || '').split(' ')[0]}! Segue o link para pagar "${link.description}" (${money(link.amount)}) com Pix ou cartão: ${link.url}`;
+  const msg = `Olá, ${(p.name || '').split(' ')[0]}! Segue o link para pagar "${link.description}" (${money(link.amount)}) com Pix: ${link.url}`;
   const phone = onlyDigits(p.phone);
   const wa = `https://wa.me/${phone.length >= 10 ? (phone.length <= 11 ? '55' + phone : phone) : ''}?text=${encodeURIComponent(msg)}`;
   const input = h('input', { class: 'input', value: link.url, readOnly: true, onfocus: (e) => e.target.select() });
@@ -27,7 +27,7 @@ export function payLinkModal(link) {
   const m = modal({ title: 'Link de pagamento', body: h('div', { class: 'stack' },
     h('div', { class: 'muted' }, `${p.name || ''} · ${link.description}`),
     h('div', { style: { fontSize: '22px', fontWeight: 700 } }, money(link.amount)),
-    h('label', { class: 'field' }, h('span', null, 'Link do Mercado Pago (Pix ou cartão, vale 7 dias)'), input),
+    h('label', { class: 'field' }, h('span', null, 'Link de pagamento (Pix, vale enquanto a cobrança estiver em aberto)'), input),
     h('div', { class: 'row', style: { flexWrap: 'wrap' } },
       h('button', { class: 'btn', onclick: async () => { try { await navigator.clipboard.writeText(link.url); toast('Link copiado'); } catch { input.select(); toast('Copie o link selecionado', 'error'); } } }, 'Copiar link'),
       h('a', { class: 'btn primary', href: wa, target: '_blank', rel: 'noopener noreferrer' }, 'Enviar pelo WhatsApp'),
@@ -62,8 +62,8 @@ export async function recebimentosTab(body, query) {
     try { location.href = (await post('/recebimentos/mp/connect')).url; } catch (err) { toast(err.message, 'error'); b.disabled = false; }
   };
   const how = h('ol', { style: { margin: '6px 0 0', paddingLeft: '20px', lineHeight: 1.7 } },
-    h('li', null, 'Ao agendar (ou no Financeiro), escolha "Enviar link do Mercado Pago".'),
-    h('li', null, 'Mande o link ao paciente pelo WhatsApp ou por e-mail. Ele paga com Pix ou cartão.'),
+    h('li', null, 'Ao agendar (ou no Financeiro), escolha "Enviar link de pagamento".'),
+    h('li', null, 'Mande o link ao paciente pelo WhatsApp ou por e-mail. Ele abre uma página da clínica e paga com Pix, sem sair do FisioGestão.'),
     h('li', null, 'O dinheiro cai direto na conta do Mercado Pago da clínica e o lançamento fica pago sozinho, com recibo.'));
   const fees = h('p', { class: 'muted', style: { margin: 0 } }, 'Tarifas: o Mercado Pago cobra a tarifa dele de cada pagamento (por exemplo, Pix ou cartão)',
     fee ? `, e a plataforma FisioGestão retém ${fee} do valor de cada pagamento recebido pelo app.` : '. A plataforma FisioGestão não cobra taxa sobre os recebimentos.');

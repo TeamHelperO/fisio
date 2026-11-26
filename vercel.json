@@ -33,6 +33,10 @@
       "destination": "/paciente.html"
     },
     {
+      "source": "/pagar/:token",
+      "destination": "/pagar.html"
+    },
+    {
       "source": "/assinar/:token",
       "destination": "/assinar.html"
     },

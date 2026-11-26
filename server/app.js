@@ -2229,9 +2229,8 @@ route('POST', '/api/portal/:token/sign/:id', async (ctx) => inPortal(ctx, async 
 // Pix dentro do portal (sem abrir a página do Mercado Pago): QR Code e "copia e cola" gerados com o token da clínica.
 // O mesmo Pix é reaproveitado enquanto vale; a baixa chega pelo webhook ou pela consulta da tela (a cada poucos segundos).
 const PIX_MINUTES = 30;
-route('POST', '/api/portal/:token/pix/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
-  const c = await q.get("SELECT * FROM charges WHERE id=? AND patient_id=? AND status='pendente'", idParam(ctx.params.id), p.id);
-  if (!c) throw new HttpError(404, 'Esta cobrança não está mais em aberto.');
+// cria (ou reaproveita, enquanto vale) o Pix de uma cobrança pendente — chamado dentro da transação da clínica
+async function pixForCharge(ctx, clinic, c, p, via) {
   if (!(c.amount > 0)) throw new HttpError(400, 'Cobrança sem valor.');
   const view = (x) => ({ charge_id: x.id, amount: x.pix_amount, code: x.pix_code, qr: x.pix_qr, expires_at: x.pix_expires_at, description: x.description });
   if (c.pix_payment_id && c.pix_amount === c.amount && c.pix_expires_at && new Date(c.pix_expires_at).getTime() > Date.now() + 2 * 60e3) return view(c);
@@ -2255,12 +2254,11 @@ route('POST', '/api/portal/:token/pix/:id', async (ctx) => inPortal(ctx, async (
   if (!pay.id || !td.qr_code) throw new HttpError(502, 'O Mercado Pago não devolveu o código Pix. Tente de novo.');
   const qr = td.qr_code_base64 && /^[A-Za-z0-9+/=]+$/.test(td.qr_code_base64) ? `data:image/png;base64,${td.qr_code_base64}` : null;
   await q.run('UPDATE charges SET pix_payment_id=?, pix_code=?, pix_qr=?, pix_expires_at=?, pix_amount=?, platform_fee=? WHERE id=?', String(pay.id), td.qr_code, qr, exp.toISOString(), c.amount, fee, c.id);
-  await audit(ctx, 'paciente_gerou_pix', 'charge', c.id, p.id, { valor: c.amount, pagamento_mp: pay.id });
+  await audit(ctx, 'paciente_gerou_pix', 'charge', c.id, p.id, { valor: c.amount, pagamento_mp: pay.id, pelo: via });
   return view(await q.get('SELECT * FROM charges WHERE id=?', c.id));
-}), { public: true });
-route('GET', '/api/portal/:token/pix/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
-  const c = await q.get('SELECT * FROM charges WHERE id=? AND patient_id=?', idParam(ctx.params.id), p.id);
-  if (!c) throw new HttpError(404, 'Cobrança não encontrada.');
+}
+// situação do Pix: consulta o Mercado Pago e dá baixa na hora se já foi pago (não depende só do webhook)
+async function pixStatusOf(clinic, c) {
   if (c.status === 'pago') return { status: 'pago', receipt_number: c.receipt_number };
   if (c.status !== 'pendente' || !c.pix_payment_id) return { status: c.status };
   try {
@@ -2271,7 +2269,53 @@ route('GET', '/api/portal/:token/pix/:id', async (ctx) => inPortal(ctx, async ({
     }
     return { status: 'pendente', mp_status: pay.status };
   } catch { return { status: 'pendente' }; }
+}
+route('POST', '/api/portal/:token/pix/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
+  const c = await q.get("SELECT * FROM charges WHERE id=? AND patient_id=? AND status='pendente'", idParam(ctx.params.id), p.id);
+  if (!c) throw new HttpError(404, 'Esta cobrança não está mais em aberto.');
+  return pixForCharge(ctx, clinic, c, p, 'portal do paciente');
 }), { public: true });
+route('GET', '/api/portal/:token/pix/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
+  const c = await q.get('SELECT * FROM charges WHERE id=? AND patient_id=?', idParam(ctx.params.id), p.id);
+  if (!c) throw new HttpError(404, 'Cobrança não encontrada.');
+  return pixStatusOf(clinic, c);
+}), { public: true });
+
+// ====================== Página de pagamento própria (/pagar/<código>) ======================
+// O link enviado ao paciente abre uma página do FisioGestão com Pix gerado na hora (sem passar pela página do
+// Mercado Pago). O código é assinado (clínica + cobrança) e só funciona enquanto a cobrança estiver em aberto.
+const payToken = (clinicId, chargeId) => `${clinicId}.${chargeId}.${signToken('pagar', `${clinicId}.${chargeId}`)}`;
+const payPageUrl = (clinicId, chargeId) => `${APP_URL}/pagar/${payToken(clinicId, chargeId)}`;
+async function inPayPage(ctx, fn) {
+  const m = /^(\d{1,9})\.(\d{1,12})\.([A-Za-z0-9_-]{43})$/.exec(String(ctx.params.token || ''));
+  const expected = m ? signToken('pagar', `${m[1]}.${m[2]}`) : '';
+  if (!m || !crypto.timingSafeEqual(Buffer.from(m[3]), Buffer.from(expected))) throw new HttpError(404, 'Link de pagamento inválido.');
+  const clinic = await getClinic(Number(m[1]));
+  if (!clinic || clinicAccess(clinic).mode === 'blocked') throw new HttpError(404, 'Link de pagamento inválido.');
+  return withClinic(clinic, async () => {
+    const c = await q.get('SELECT * FROM charges WHERE id=?', Number(m[2]));
+    if (!c) throw new HttpError(404, 'Link de pagamento inválido.');
+    const p = await q.get('SELECT id, name, email FROM patients WHERE id=?', c.patient_id);
+    return fn({ clinic, c, p });
+  });
+}
+route('GET', '/api/pagar/:token', async (ctx) => inPayPage(ctx, async ({ clinic, c, p }) => {
+  const s = await getSettings();
+  return {
+    clinic: { name: s.clinic_name || clinic.name, phone: s.phone || '' },
+    patient: { first_name: (p?.name || '').split(' ')[0] },
+    description: c.description, amount: c.amount, status: c.status, receipt_number: c.status === 'pago' ? c.receipt_number : null,
+    can_pay: c.status === 'pendente' && !!(await recvAccount(clinic.id)),
+  };
+}), { public: true });
+route('POST', '/api/pagar/:token/pix', async (ctx) => {
+  const key = `pagar|${ctx.ip}`; await checkRate(key); await failRate(key, 60, 15); // até 60 Pix por IP a cada 15 min
+  return inPayPage(ctx, async ({ clinic, c, p }) => {
+    if (c.status !== 'pendente') throw new HttpError(400, c.status === 'pago' ? 'Esta cobrança já foi paga.' : 'Esta cobrança não está mais em aberto.');
+    return pixForCharge({ ...ctx, user: null }, clinic, c, p, 'link de pagamento');
+  });
+}, { public: true });
+route('GET', '/api/pagar/:token/pix', async (ctx) => inPayPage(ctx, ({ clinic, c }) => pixStatusOf(clinic, c)), { public: true });
 // link de pagamento atualizado (gera de novo se o anterior venceu)
 route('POST', '/api/portal/:token/pay/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
   const c = await q.get("SELECT id FROM charges WHERE id=? AND patient_id=? AND status='pendente'", idParam(ctx.params.id), p.id);
@@ -2365,25 +2409,13 @@ async function payLinkFor(ctx, chargeId) {
   if (!c) throw new HttpError(404, 'Lançamento não encontrado');
   if (c.status !== 'pendente') throw new HttpError(400, 'Só cobranças pendentes podem receber link de pagamento');
   const patient = { name: c.patient_name, email: c.patient_email, phone: c.patient_phone };
-  const fresh = c.pay_url && c.pay_amount === c.amount && c.pay_link_at && (Date.now() - new Date(c.pay_link_at).getTime()) < (PAY_LINK_DAYS - 1) * 86400e3;
-  if (fresh) return { charge_id: c.id, url: c.pay_url, amount: c.amount, fee: c.platform_fee || 0, description: c.description, patient };
-  const token = await recvToken(ctx.clinic.id);
+  const url = payPageUrl(ctx.clinic.id, c.id);
+  if (c.pay_url === url && c.pay_amount === c.amount) return { charge_id: c.id, url, amount: c.amount, fee: c.platform_fee || 0, description: c.description, patient };
+  if (!(await recvAccount(ctx.clinic.id))) throw new HttpError(400, 'Conecte a conta do Mercado Pago da clínica em Configurações → Recebimentos.');
   const fee = Math.round(c.amount * recvFeePct()) / 100;
-  const exp = new Date(Date.now() + PAY_LINK_DAYS * 86400e3);
-  const pref = {
-    items: [{ id: `cobranca-${c.id}`, title: c.description.slice(0, 120), quantity: 1, unit_price: c.amount, currency_id: 'BRL' }],
-    payer: { name: c.patient_name, ...(c.patient_email && EMAIL_RE.test(c.patient_email) ? { email: c.patient_email } : {}) },
-    external_reference: recvRef(ctx.clinic.id, c.id),
-    notification_url: `${APP_URL}/api/mp/recebimentos/webhook/${ctx.clinic.id}`,
-    statement_descriptor: String((await getSettings()).clinic_name || ctx.clinic.name).normalize('NFD').replace(/[^A-Za-z0-9 ]/g, '').slice(0, 22) || undefined,
-    expires: true, expiration_date_to: exp.toISOString(),
-  };
-  if (fee > 0) pref.marketplace_fee = fee;
-  const r = await mp.sellerRequest(token, 'POST', '/checkout/preferences', pref);
-  if (!r.init_point) throw new HttpError(502, 'O Mercado Pago não devolveu o link de pagamento. Tente novamente.');
-  await q.run('UPDATE charges SET pay_url=?, pay_amount=?, mp_preference_id=?, platform_fee=?, pay_link_at=? WHERE id=?', r.init_point, c.amount, r.id || null, fee, new Date().toISOString(), c.id);
+  await q.run('UPDATE charges SET pay_url=?, pay_amount=?, platform_fee=?, pay_link_at=? WHERE id=?', url, c.amount, fee, new Date().toISOString(), c.id);
   await audit(ctx, 'gerou_link_pagamento', 'charge', c.id, c.patient_id, { valor: c.amount, taxa_plataforma: fee });
-  return { charge_id: c.id, url: r.init_point, amount: c.amount, fee, description: c.description, patient };
+  return { charge_id: c.id, url, amount: c.amount, fee, description: c.description, patient };
 }
 // cobrança pendente para o link do agendamento (uma parte, no valor informado, ou o que falta do total)
 async function linkChargeForAppointment(ctx, apptId, kind) {
@@ -2421,7 +2453,7 @@ route('POST', '/api/charges/:id/pay-link/email', async (ctx) => {
   if (!c.patient_email) throw new HttpError(400, 'O paciente não tem e-mail cadastrado.');
   const link = await payLinkFor(ctx, c.id);
   await notify.sendTemplate('pagamento_link', { to: c.patient_email, clinicId: ctx.clinic.id, url: link.url,
-    vars: { nome: c.patient_name, clinica: (await getSettings()).clinic_name || ctx.clinic.name, descricao: c.description, valor: brl(c.amount), validade: `${PAY_LINK_DAYS} dias` } });
+    vars: { nome: c.patient_name, clinica: (await getSettings()).clinic_name || ctx.clinic.name, descricao: c.description, valor: brl(c.amount), validade: 'enquanto a cobrança estiver em aberto' } });
   await audit(ctx, 'enviou_link_pagamento', 'charge', c.id, c.patient_id, { para: c.patient_email });
   return { ok: true };
 });

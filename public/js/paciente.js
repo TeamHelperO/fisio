@@ -216,11 +216,7 @@ async function main() {
         h('button', { class: 'btn sm primary', onclick: async (e) => {
           const b = e.currentTarget; b.disabled = true;
           await pixModal(c, reload); b.disabled = false;
-        } }, 'Pagar com Pix'),
-        h('button', { class: 'btn sm', title: 'Pagamento com cartão pelo Mercado Pago', onclick: async (e) => {
-          const b = e.currentTarget; b.disabled = true;
-          try { location.href = (await api(`/pay/${c.id}`, {})).url; } catch (err) { toast(err.message, 'error'); b.disabled = false; }
-        } }, 'Cartão'))))) : null,
+        } }, 'Pagar com Pix'))))) : null,
     d.paid.length ? h('details', { class: 'pt-details' }, h('summary', null, `Pagamentos feitos (${d.paid.length})`),
       h('div', { class: 'pt-list' }, d.paid.map((c) => h('div', { class: 'pt-item' },
         h('div', { class: 'grow' }, h('span', null, c.description), h('div', { class: 'pt-sub' }, `Pago em ${dm(c.paid_at)}${c.receipt_number ? ` · recibo nº ${c.receipt_number}` : ''}`)),

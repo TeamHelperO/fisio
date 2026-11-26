@@ -48,9 +48,9 @@ export async function appointmentModal(appt = {}, onSaved = () => {}) {
   const price = () => Number(form.inputs.price.value) || 0;
   const payOpts = paid > 0
     ? [['depois', 'Restante será pago no atendimento'], ['sinal', 'Recebeu mais uma parte agora'], ['pago', 'Pagou o restante agora'],
-      ...(recv.connected ? [['link_sinal', 'Enviar link do Mercado Pago — uma parte'], ['link_total', 'Enviar link do Mercado Pago — restante']] : [])]
+      ...(recv.connected ? [['link_sinal', 'Enviar link de pagamento (Pix) — uma parte'], ['link_total', 'Enviar link de pagamento (Pix) — restante']] : [])]
     : [['depois', 'Vai pagar no dia do atendimento'], ['sinal', 'Recebeu uma parte agora (sinal)'], ['pago', 'Já pagou o valor total'],
-      ...(recv.connected ? [['link_sinal', 'Enviar link do Mercado Pago — uma parte (sinal)'], ['link_total', 'Enviar link do Mercado Pago — valor total']] : [])];
+      ...(recv.connected ? [['link_sinal', 'Enviar link de pagamento (Pix) — uma parte (sinal)'], ['link_total', 'Enviar link de pagamento (Pix) — valor total']] : [])];
   const paySel = h('select', { class: 'input', name: 'payment' }, payOpts.map(([v, l]) => h('option', { value: v }, l)));
   const methodSel = h('select', { class: 'input', name: 'payment_method' }, h('option', { value: '' }, 'Selecione…'), Object.entries(LABELS.method).map(([v, l]) => h('option', { value: v }, l)));
   const payInfo = h('small', { class: 'help' });
