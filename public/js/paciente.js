@@ -1,7 +1,7 @@
 // Portal do paciente. /paciente (entrar com e-mail e senha), /paciente/<código> (link pessoal),
 // /paciente/cadastro/<código da clínica> (cadastro) e /paciente/senha/<código> (criar senha).
 // Consultas, pagamentos, documentos, exercícios e diário de dor.
-import { h, icon, toast } from './ui.js';
+import { h, icon, toast, modal } from './ui.js';
 
 const root = document.getElementById('root');
 const show = (...els) => root.replaceChildren(...els.flat().filter(Boolean));
@@ -31,6 +31,46 @@ const onlyDigits = (s) => String(s || '').replace(/\D/g, '');
 const section = (title, ic, ...body) => h('section', { class: 'bk-card' }, h('h2', null, icon(ic, 17), title), ...body);
 const PAIN_COLOR = (n) => (n <= 3 ? '#16a34a' : n <= 6 ? '#d97706' : '#dc2626');
 const isImage = (u) => /\.(gif|png|jpe?g|webp)(\?|$)/i.test(u || '');
+
+// Pix dentro do portal: QR Code + "copia e cola"; a tela confere sozinha até o pagamento ser aprovado
+async function pixModal(c, onPaid) {
+  let pix;
+  try { pix = await api(`/pix/${c.id}`, {}); } catch (e) { return toast(e.message, 'error'); }
+  const status = h('div', { class: 'pt-pix-status' }, h('span', { class: 'pt-dot' }), 'Aguardando o pagamento…');
+  const left = h('small', { class: 'pt-sub' });
+  const code = h('textarea', { class: 'input pt-pix-code', readOnly: true, rows: 3, onfocus: (e) => e.target.select() }); code.value = pix.code;
+  const copy = h('button', { class: 'btn primary', style: { width: '100%' }, onclick: async () => {
+    try { await navigator.clipboard.writeText(pix.code); copy.textContent = 'Código copiado!'; setTimeout(() => { copy.textContent = 'Copiar código Pix'; }, 2500); }
+    catch { code.focus(); code.select(); toast('Selecione e copie o código acima', 'error'); }
+  } }, 'Copiar código Pix');
+  const body = h('div', { class: 'stack pt-pix' },
+    h('div', { class: 'pt-sub', style: { textAlign: 'center' } }, pix.description),
+    h('div', { style: { fontSize: '26px', fontWeight: 700, textAlign: 'center' } }, brl(pix.amount)),
+    pix.qr ? h('img', { class: 'pt-pix-qr', src: pix.qr, alt: 'QR Code Pix' }) : null,
+    h('ol', { class: 'pt-steps' }, h('li', null, 'Abra o app do seu banco e escolha Pix.'), h('li', null, pix.qr ? 'Leia o QR Code ou use o "Pix copia e cola" com o código abaixo.' : 'Use o "Pix copia e cola" com o código abaixo.'), h('li', null, 'Confirme o pagamento. Esta tela atualiza sozinha.')),
+    code, copy, status, left);
+  let stop = false; let timer = null;
+  const m = modal({ title: 'Pagar com Pix', body, onClose: () => { stop = true; clearTimeout(timer); } });
+  const exp = new Date(pix.expires_at).getTime();
+  const tick = async () => {
+    if (stop) return;
+    const ms = exp - Date.now();
+    if (ms <= 0) { status.replaceChildren('Este código Pix venceu. Feche e gere um novo.'); status.classList.add('off'); return; }
+    left.textContent = `O código vale por mais ${Math.floor(ms / 60000)} min ${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')} s.`;
+    try {
+      const r = await api(`/pix/${c.id}`);
+      if (r.status === 'pago') {
+        stop = true;
+        body.replaceChildren(h('div', { class: 'bk-done', style: { padding: '10px 0' } }, h('div', { class: 'bk-logo' }, icon('check', 26)),
+          h('h2', { style: { justifyContent: 'center' } }, 'Pagamento aprovado!'), h('p', { class: 'bk-empty' }, `Obrigado. ${r.receipt_number ? `Recibo nº ${r.receipt_number}.` : ''} A clínica já recebeu a confirmação.`),
+          h('button', { class: 'btn primary', onclick: () => { m.close(); onPaid(); } }, 'Fechar')));
+        return;
+      }
+    } catch { /* sem conexão: tenta de novo */ }
+    timer = setTimeout(tick, 4000);
+  };
+  tick();
+}
 
 function fail(msg) {
   show(h('div', { class: 'bk-card bk-done' }, h('div', { class: 'bk-logo' }, icon('alert', 26)),
@@ -172,10 +212,15 @@ async function main() {
   const pay = d.pending.length || d.paid.length ? h('div', { class: 'stack' },
     d.pending.length ? h('div', { class: 'pt-list' }, d.pending.map((c) => h('div', { class: 'pt-item' },
       h('div', { class: 'grow' }, h('b', null, brl(c.amount)), h('div', { class: 'pt-sub' }, c.description)),
-      h('button', { class: 'btn sm primary', onclick: async (e) => {
-        const b = e.currentTarget; b.disabled = true;
-        try { location.href = (await api(`/pay/${c.id}`, {})).url; } catch (err) { toast(err.message, 'error'); b.disabled = false; }
-      } }, 'Pagar (Pix ou cartão)')))) : null,
+      h('div', { class: 'pt-actions' },
+        h('button', { class: 'btn sm primary', onclick: async (e) => {
+          const b = e.currentTarget; b.disabled = true;
+          await pixModal(c, reload); b.disabled = false;
+        } }, 'Pagar com Pix'),
+        h('button', { class: 'btn sm', title: 'Pagamento com cartão pelo Mercado Pago', onclick: async (e) => {
+          const b = e.currentTarget; b.disabled = true;
+          try { location.href = (await api(`/pay/${c.id}`, {})).url; } catch (err) { toast(err.message, 'error'); b.disabled = false; }
+        } }, 'Cartão'))))) : null,
     d.paid.length ? h('details', { class: 'pt-details' }, h('summary', null, `Pagamentos feitos (${d.paid.length})`),
       h('div', { class: 'pt-list' }, d.paid.map((c) => h('div', { class: 'pt-item' },
         h('div', { class: 'grow' }, h('span', null, c.description), h('div', { class: 'pt-sub' }, `Pago em ${dm(c.paid_at)}${c.receipt_number ? ` · recibo nº ${c.receipt_number}` : ''}`)),

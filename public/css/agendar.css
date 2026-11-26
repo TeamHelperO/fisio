@@ -55,3 +55,10 @@ body.booking-page { background: var(--bg); min-height: 100vh; }
 .pt-exbody ol { padding-left: 20px; margin: 6px 0; }
 .pt-warn { background: var(--amber-50); border-radius: 8px; padding: 8px 10px; font-size: 13px; margin: 6px 0; }
 @media (max-width: 420px) { .pt-scale { grid-template-columns: repeat(6, 1fr); } .pt-item { flex-wrap: wrap; } }
+.pt-pix-qr { width: 220px; height: 220px; margin: 0 auto; display: block; image-rendering: pixelated; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+.pt-pix-code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; resize: none; }
+.pt-steps { margin: 0; padding-left: 20px; font-size: 13.5px; line-height: 1.6; }
+.pt-pix-status { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; color: var(--muted); }
+.pt-pix-status.off .pt-dot { display: none; }
+.pt-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--primary); animation: pt-pulse 1.2s ease-in-out infinite; }
+@keyframes pt-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }

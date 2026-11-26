@@ -554,6 +554,10 @@ CREATE TABLE pain_diary (
   UNIQUE (patient_id, day)
 );
 `,
+  // v7 — Pix gerado dentro do portal do paciente (Checkout Transparente do Mercado Pago)
+  `
+ALTER TABLE charges ADD COLUMN pix_payment_id text, ADD COLUMN pix_code text, ADD COLUMN pix_qr text, ADD COLUMN pix_expires_at text, ADD COLUMN pix_amount double precision;
+`,
 ];
 
 let coreReady = null;

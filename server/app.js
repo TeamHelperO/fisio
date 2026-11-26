@@ -2178,7 +2178,8 @@ route('GET', '/api/portal/:token', async (ctx) => inPortal(ctx, async ({ link, c
   const now = nowLocal();
   const appts = await q.all(`SELECT a.id, a.start, a.duration, a.kind, a.status, u.name professional FROM appointments a LEFT JOIN users u ON u.id=a.professional_id
     WHERE a.patient_id=? AND a.start >= ? AND a.status IN ('agendado','confirmado') ORDER BY a.start LIMIT 10`, p.id, now.slice(0, 10));
-  const pending = await q.all("SELECT id, description, amount, due_date FROM charges WHERE patient_id=? AND status='pendente' AND pay_url IS NOT NULL ORDER BY due_date, id", p.id);
+  const canPay = !!(await recvAccount(clinic.id));
+  const pending = canPay ? await q.all("SELECT id, description, amount, due_date FROM charges WHERE patient_id=? AND status='pendente' AND amount > 0 ORDER BY due_date, id", p.id) : [];
   const paid = await q.all("SELECT description, amount, paid_at, method, receipt_number FROM charges WHERE patient_id=? AND status='pago' ORDER BY paid_at DESC, id DESC LIMIT 10", p.id);
   const sigs = await q.all("SELECT id, title, expires_at FROM signature_requests WHERE patient_id=? AND status='pendente' AND expires_at >= ? ORDER BY id DESC", p.id, today());
   const programs = (await q.all("SELECT * FROM exercise_programs WHERE patient_id=? AND status='ativo' ORDER BY start_date DESC, id DESC", p.id)).map(programView)
@@ -2189,7 +2190,7 @@ route('GET', '/api/portal/:token', async (ctx) => inPortal(ctx, async ({ link, c
     clinic: { name: s.clinic_name || clinic.name, phone: s.phone || '', email: s.email || '', address: s.address || '' },
     patient: { first_name: p.name.split(' ')[0] }, today: today(), logged_in: !!link.account,
     appointments: appts.map((a) => ({ ...a, kind: KIND_PT[a.kind] || a.kind, can_confirm: a.status === 'agendado' && a.start > now })),
-    pending, paid, signatures: sigs, programs, diary,
+    pending, paid, signatures: sigs, programs, diary, can_pay: canPay,
   };
 }), { public: true });
 route('POST', '/api/portal/:token/appointments/:id/confirm', async (ctx) => inPortal(ctx, async ({ p }) => {
@@ -2218,9 +2219,55 @@ route('POST', '/api/portal/:token/sign/:id', async (ctx) => inPortal(ctx, async 
   await q.run('INSERT INTO saas.signature_links(token_hash, clinic_id, request_id, expires_at) VALUES (?,?,?,?)', sha(token), clinic.id, s.id, new Date(`${s.expires_at}T23:59:00`).getTime());
   return { url: `${APP_URL}/assinar/${token}` };
 }), { public: true });
+// Pix dentro do portal (sem abrir a página do Mercado Pago): QR Code e "copia e cola" gerados com o token da clínica.
+// O mesmo Pix é reaproveitado enquanto vale; a baixa chega pelo webhook ou pela consulta da tela (a cada poucos segundos).
+const PIX_MINUTES = 30;
+route('POST', '/api/portal/:token/pix/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
+  const c = await q.get("SELECT * FROM charges WHERE id=? AND patient_id=? AND status='pendente'", idParam(ctx.params.id), p.id);
+  if (!c) throw new HttpError(404, 'Esta cobrança não está mais em aberto.');
+  if (!(c.amount > 0)) throw new HttpError(400, 'Cobrança sem valor.');
+  const view = (x) => ({ charge_id: x.id, amount: x.pix_amount, code: x.pix_code, qr: x.pix_qr, expires_at: x.pix_expires_at, description: x.description });
+  if (c.pix_payment_id && c.pix_amount === c.amount && c.pix_expires_at && new Date(c.pix_expires_at).getTime() > Date.now() + 2 * 60e3) return view(c);
+  let token;
+  try { token = await recvToken(clinic.id); } catch { throw new HttpError(400, 'A clínica ainda não recebe pagamentos pelo portal. Fale com a clínica.'); }
+  const fee = Math.round(c.amount * recvFeePct()) / 100;
+  const exp = new Date(Date.now() + PIX_MINUTES * 60e3);
+  const email = p.email && EMAIL_RE.test(p.email) ? p.email.trim().toLowerCase() : `paciente-${clinic.id}-${p.id}@${new URL(APP_URL).hostname}`;
+  const [first, ...rest] = p.name.trim().split(/\s+/);
+  const body = {
+    transaction_amount: c.amount, description: c.description.slice(0, 120), payment_method_id: 'pix',
+    payer: { email, first_name: first, last_name: rest.join(' ') || first },
+    external_reference: recvRef(clinic.id, c.id),
+    notification_url: `${APP_URL}/api/mp/recebimentos/webhook/${clinic.id}`,
+    date_of_expiration: exp.toISOString().replace('Z', '+00:00'),
+  };
+  if (fee > 0) body.application_fee = fee;
+  let pay;
+  try { pay = await mp.sellerRequest(token, 'POST', '/v1/payments', body); } catch { throw new HttpError(502, 'Não foi possível gerar o Pix agora. Tente de novo em instantes.'); }
+  const td = pay.point_of_interaction?.transaction_data || {};
+  if (!pay.id || !td.qr_code) throw new HttpError(502, 'O Mercado Pago não devolveu o código Pix. Tente de novo.');
+  const qr = td.qr_code_base64 && /^[A-Za-z0-9+/=]+$/.test(td.qr_code_base64) ? `data:image/png;base64,${td.qr_code_base64}` : null;
+  await q.run('UPDATE charges SET pix_payment_id=?, pix_code=?, pix_qr=?, pix_expires_at=?, pix_amount=?, platform_fee=? WHERE id=?', String(pay.id), td.qr_code, qr, exp.toISOString(), c.amount, fee, c.id);
+  await audit(ctx, 'paciente_gerou_pix', 'charge', c.id, p.id, { valor: c.amount, pagamento_mp: pay.id });
+  return view(await q.get('SELECT * FROM charges WHERE id=?', c.id));
+}), { public: true });
+route('GET', '/api/portal/:token/pix/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
+  const c = await q.get('SELECT * FROM charges WHERE id=? AND patient_id=?', idParam(ctx.params.id), p.id);
+  if (!c) throw new HttpError(404, 'Cobrança não encontrada.');
+  if (c.status === 'pago') return { status: 'pago', receipt_number: c.receipt_number };
+  if (c.status !== 'pendente' || !c.pix_payment_id) return { status: c.status };
+  try {
+    const pay = await mp.sellerRequest(await recvToken(clinic.id), 'GET', `/v1/payments/${encodeURIComponent(c.pix_payment_id)}`);
+    if (pay.status === 'approved') {
+      const done = await registerMpPayment(clinic, pay);
+      if (done?.status === 'pago') return { status: 'pago', receipt_number: done.receipt_number };
+    }
+    return { status: 'pendente', mp_status: pay.status };
+  } catch { return { status: 'pendente' }; }
+}), { public: true });
 // link de pagamento atualizado (gera de novo se o anterior venceu)
 route('POST', '/api/portal/:token/pay/:id', async (ctx) => inPortal(ctx, async ({ clinic, p }) => {
-  const c = await q.get("SELECT id FROM charges WHERE id=? AND patient_id=? AND status='pendente' AND pay_url IS NOT NULL", idParam(ctx.params.id), p.id);
+  const c = await q.get("SELECT id FROM charges WHERE id=? AND patient_id=? AND status='pendente'", idParam(ctx.params.id), p.id);
   if (!c) throw new HttpError(404, 'Esta cobrança não está mais em aberto.');
   try { return { url: (await payLinkFor({ ...ctx, clinic, user: null }, c.id)).url }; } catch { throw new HttpError(400, 'Não foi possível abrir o pagamento agora. Fale com a clínica.'); }
 }), { public: true });
