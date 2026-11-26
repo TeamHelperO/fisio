@@ -21,7 +21,15 @@
       "destination": "/agendar.html"
     },
     {
+      "source": "/paciente",
+      "destination": "/paciente.html"
+    },
+    {
       "source": "/paciente/:token",
+      "destination": "/paciente.html"
+    },
+    {
+      "source": "/paciente/:a/:b",
       "destination": "/paciente.html"
     },
     {

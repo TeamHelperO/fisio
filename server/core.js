@@ -350,6 +350,30 @@ CREATE TABLE IF NOT EXISTS saas.portal_links (
   created_at timestamptz NOT NULL DEFAULT now(), expires_at bigint NOT NULL, revoked_at bigint, last_used_at timestamptz
 );
 CREATE INDEX IF NOT EXISTS portal_links_patient ON saas.portal_links(clinic_id, patient_id);
+-- Contas do paciente no portal (e-mail e senha), sessões, links de senha e link de cadastro da clínica
+CREATE TABLE IF NOT EXISTS saas.patient_accounts (
+  id serial PRIMARY KEY,
+  clinic_id integer NOT NULL REFERENCES saas.clinics(id) ON DELETE CASCADE,
+  patient_id integer NOT NULL, email text NOT NULL, password_hash text,
+  created_at timestamptz NOT NULL DEFAULT now(), last_login timestamptz,
+  UNIQUE (clinic_id, patient_id)
+);
+CREATE INDEX IF NOT EXISTS patient_accounts_email ON saas.patient_accounts(lower(email));
+CREATE TABLE IF NOT EXISTS saas.patient_password_tokens (
+  token_hash text PRIMARY KEY,
+  account_id integer NOT NULL REFERENCES saas.patient_accounts(id) ON DELETE CASCADE,
+  expires_at bigint NOT NULL, used_at bigint
+);
+CREATE TABLE IF NOT EXISTS saas.patient_sessions (
+  token_hash text PRIMARY KEY,
+  account_id integer NOT NULL REFERENCES saas.patient_accounts(id) ON DELETE CASCADE,
+  expires_at bigint NOT NULL, ip text
+);
+CREATE TABLE IF NOT EXISTS saas.portal_signup (
+  code text PRIMARY KEY,
+  clinic_id integer NOT NULL UNIQUE REFERENCES saas.clinics(id) ON DELETE CASCADE,
+  enabled boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS saas.mp_oauth_states (
   state_hash text PRIMARY KEY,
   clinic_id integer NOT NULL REFERENCES saas.clinics(id) ON DELETE CASCADE,

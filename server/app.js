@@ -604,7 +604,12 @@ route('POST', '/api/patients', async (ctx) => {
   const r = await q.run(`INSERT INTO patients(name,birth_date,cpf,phone,email,address,profession,emergency_name,emergency_phone,first_visit,status,professional_id,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, ...f);
   const id = Number(r.lastInsertRowid);
   await audit(ctx, 'criou', 'patient', id, id);
-  return { id };
+  let invited = false;
+  if (f[4] && (await getSettings()).portal_auto_invite === '1') {
+    try { await invitePatient(ctx.clinic, { id, name: f[0], email: f[4] }); invited = true; await audit(ctx, 'convidou_portal', 'patient', id, id, { automatico: true }); }
+    catch (e) { console.warn('Convite automático do portal não enviado', e.message); }
+  }
+  return { id, invited };
 });
 route('GET', '/api/patients/:id', async (ctx) => {
   const p = await getPatient(ctx.user, ctx.params.id);
@@ -1903,8 +1908,15 @@ route('POST', '/api/mercadopago/webhook', async (ctx) => {
 const PORTAL_DAYS = 180;
 const portalUrl = (token) => `${APP_URL}/paciente/${token}`;
 async function portalAccess(ctx) {
-  const key = `portal|${ctx.ip}`; await checkRate(key);
   const token = ctx.params.token;
+  if (token === 'eu') { // paciente que entrou com e-mail e senha
+    const ses = await pacSession(ctx);
+    if (!ses) throw new HttpError(401, 'Entre com seu e-mail e senha.');
+    const clinic = await getClinic(ses.clinic_id);
+    if (!clinic || clinicAccess(clinic).mode === 'blocked') throw new HttpError(404, 'Portal indisponível no momento. Fale com a clínica.');
+    return { link: { clinic_id: ses.clinic_id, patient_id: ses.patient_id, token_hash: null, account: true }, clinic };
+  }
+  const key = `portal|${ctx.ip}`; await checkRate(key);
   const bad = async () => { await failRate(key, 30, 30); throw new HttpError(404, 'Link do portal inválido ou desativado. Peça um novo link à clínica.'); };
   if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,60}$/.test(token)) return bad();
   const l = (await sql.unsafe('SELECT * FROM saas.portal_links WHERE token_hash=$1', [sha(token)]))[0];
@@ -1962,9 +1974,206 @@ route('GET', '/api/patients/:id/diary', async (ctx) => {
   return (await q.all('SELECT * FROM pain_diary WHERE patient_id=? ORDER BY day DESC LIMIT 180', p.id)).map(diaryView);
 });
 
+// ---------- Contas do paciente (e-mail e senha) e link de cadastro da clínica ----------
+// O paciente se cadastra pelo link da clínica (ou é cadastrado por ela) e recebe por e-mail o link para criar a senha.
+// Depois entra no portal em /paciente com e-mail e senha. A senha só é criada por quem tem acesso ao e-mail.
+const PAC_SESSION_DAYS = 30;
+const PAC_TOKEN_HOURS = 48;
+const pacCookie = (res, token, maxAge) => res.setHeader('Set-Cookie', `fisio_pac=${token}; HttpOnly; SameSite=Strict; Path=/api; Max-Age=${maxAge}${COOKIE_SECURE ? '; Secure' : ''}`);
+const normEmail = (e) => String(e || '').trim().toLowerCase();
+async function pacSession(ctx) {
+  const token = parseCookies(ctx.req).fisio_pac;
+  if (!token) return null;
+  const s = (await sql.unsafe(`SELECT s.*, a.clinic_id, a.patient_id, a.id account_id FROM saas.patient_sessions s JOIN saas.patient_accounts a ON a.id=s.account_id
+    WHERE s.token_hash=$1`, [sha(token)]))[0];
+  if (!s || Number(s.expires_at) < Date.now()) return null;
+  await sql.unsafe('UPDATE saas.patient_sessions SET expires_at=$2 WHERE token_hash=$1', [s.token_hash, Date.now() + PAC_SESSION_DAYS * 86400e3]);
+  pacCookie(ctx.res, token, PAC_SESSION_DAYS * 86400);
+  return s;
+}
+async function pacLogin(ctx, accountId) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  await currentSql().unsafe('INSERT INTO saas.patient_sessions(token_hash, account_id, expires_at, ip) VALUES ($1,$2,$3,$4)', [sha(token), accountId, Date.now() + PAC_SESSION_DAYS * 86400e3, ctx.ip]);
+  await currentSql().unsafe('UPDATE saas.patient_accounts SET last_login=now() WHERE id=$1', [accountId]);
+  pacCookie(ctx.res, token, PAC_SESSION_DAYS * 86400);
+}
+// cria/atualiza a conta do paciente e envia o link para criar a senha — chamada dentro da clínica
+async function invitePatient(clinic, p, { reset = false } = {}) {
+  const email = normEmail(p.email);
+  if (!EMAIL_RE.test(email)) throw new HttpError(400, 'O paciente precisa ter um e-mail válido no cadastro.');
+  const other = (await currentSql().unsafe('SELECT patient_id FROM saas.patient_accounts WHERE clinic_id=$1 AND lower(email)=$2 AND patient_id<>$3', [clinic.id, email, p.id]))[0];
+  if (other) throw new HttpError(400, 'Este e-mail já é usado no portal por outro paciente desta clínica.');
+  const acc = (await currentSql().unsafe(`INSERT INTO saas.patient_accounts(clinic_id, patient_id, email) VALUES ($1,$2,$3)
+    ON CONFLICT (clinic_id, patient_id) DO UPDATE SET email=excluded.email RETURNING id, password_hash`, [clinic.id, p.id, email]))[0];
+  const token = crypto.randomBytes(32).toString('base64url');
+  await currentSql().unsafe('INSERT INTO saas.patient_password_tokens(token_hash, account_id, expires_at) VALUES ($1,$2,$3)', [sha(token), acc.id, Date.now() + PAC_TOKEN_HOURS * 3600e3]);
+  const s = await getSettings();
+  await notify.sendTemplate('portal_criar_senha', { to: email, clinicId: clinic.id, url: `${APP_URL}/paciente/senha/${token}`,
+    vars: { nome: p.name.split(' ')[0], clinica: s.clinic_name || clinic.name, validade: `${PAC_TOKEN_HOURS} horas`, acao: acc.password_hash || reset ? 'trocar a sua senha' : 'criar a sua senha' } });
+  return acc.id;
+}
+
+// --- clínica: configurações do portal (link de cadastro e convite automático) ---
+async function signupCode(clinicId) { return (await currentSql().unsafe('SELECT * FROM saas.portal_signup WHERE clinic_id=$1', [clinicId]))[0] || null; }
+route('GET', '/api/portal-config', async (ctx) => {
+  requireRole(ctx.user, ['admin']);
+  const c = await signupCode(ctx.clinic.id); const s = await getSettings();
+  return { signup_enabled: !!c?.enabled, signup_url: c?.enabled ? `${APP_URL}/paciente/cadastro/${c.code}` : null, auto_invite: s.portal_auto_invite === '1', login_url: `${APP_URL}/paciente` };
+});
+route('PUT', '/api/portal-config', async (ctx) => {
+  requireRole(ctx.user, ['admin']);
+  const b = ctx.body;
+  if (b.auto_invite !== undefined) await setSetting('portal_auto_invite', b.auto_invite ? '1' : '0');
+  if (b.signup_enabled !== undefined || b.new_code) {
+    const cur = await signupCode(ctx.clinic.id);
+    const code = !cur || b.new_code ? crypto.randomBytes(9).toString('base64url') : cur.code;
+    await currentSql().unsafe(`INSERT INTO saas.portal_signup(code, clinic_id, enabled) VALUES ($1,$2,$3)
+      ON CONFLICT (clinic_id) DO UPDATE SET code=excluded.code, enabled=excluded.enabled`, [code, ctx.clinic.id, b.signup_enabled ?? cur?.enabled ?? true]);
+  }
+  await audit(ctx, 'alterou_portal', 'clinic', ctx.clinic.id, null, { cadastro: b.signup_enabled, novo_link: !!b.new_code, convite_automatico: b.auto_invite });
+  return { ok: true };
+});
+route('GET', '/api/patients/:id/account', async (ctx) => {
+  const p = await getPatient(ctx.user, ctx.params.id);
+  const a = (await currentSql().unsafe('SELECT email, password_hash IS NOT NULL has_password, created_at, last_login FROM saas.patient_accounts WHERE clinic_id=$1 AND patient_id=$2', [ctx.clinic.id, p.id]))[0];
+  return a ? { exists: true, email: a.email, has_password: a.has_password, last_login: a.last_login } : { exists: false };
+});
+route('POST', '/api/patients/:id/invite', async (ctx) => {
+  const p = await getPatient(ctx.user, ctx.params.id);
+  try { await invitePatient(ctx.clinic, p); } catch (e) {
+    if (e instanceof HttpError) throw e;
+    console.error('Convite do portal não enviado', e.message);
+    throw new HttpError(502, 'Não foi possível enviar o e-mail agora. Verifique o e-mail do paciente ou tente mais tarde.');
+  }
+  await audit(ctx, 'convidou_portal', 'patient', p.id, p.id, { email: normEmail(p.email) });
+  return { ok: true, email: normEmail(p.email) };
+});
+
+// --- público: cadastro pelo link da clínica ---
+async function signupByCode(code) {
+  if (typeof code !== 'string' || !/^[A-Za-z0-9_-]{8,20}$/.test(code)) throw new HttpError(404, 'Link de cadastro inválido.');
+  const c = (await sql.unsafe('SELECT * FROM saas.portal_signup WHERE code=$1 AND enabled', [code]))[0];
+  if (!c) throw new HttpError(404, 'Este link de cadastro não está mais ativo. Peça um novo link à clínica.');
+  const clinic = await getClinic(c.clinic_id);
+  if (!clinic || clinicAccess(clinic).mode !== 'full') throw new HttpError(404, 'Cadastro indisponível no momento. Fale com a clínica.');
+  return clinic;
+}
+route('GET', '/api/public/portal-signup/:code', async (ctx) => {
+  const clinic = await signupByCode(ctx.params.code);
+  return withClinic(clinic, async () => {
+    const s = await getSettings();
+    return { clinic: s.clinic_name || clinic.name, consent_text: s.consent_text, consent_version: s.consent_version };
+  });
+}, { public: true });
+route('POST', '/api/public/portal-signup/:code', async (ctx) => {
+  const key = `pacsignup|${ctx.ip}`; await checkRate(key);
+  const clinic = await signupByCode(ctx.params.code);
+  const b = ctx.body;
+  if (b.website) return { ok: true }; // campo invisível preenchido: robô
+  const name = reqStr(b.name, 'Nome completo', 160);
+  if (name.split(/\s+/).filter(Boolean).length < 2) throw new HttpError(400, 'Digite o nome completo');
+  const email = normEmail(b.email);
+  if (!EMAIL_RE.test(email) || email.length > 160) throw new HttpError(400, 'Informe um e-mail válido');
+  const phone = reqStr(b.phone, 'Telefone / WhatsApp', 40);
+  if (phone.replace(/\D/g, '').length < 10) throw new HttpError(400, 'Informe o telefone com DDD');
+  const birth = date(b.birth_date, 'Data de nascimento');
+  const cpf = b.cpf ? cpfField(b.cpf, 'CPF') : null;
+  if (!b.consent) throw new HttpError(400, 'Para se cadastrar, é preciso aceitar o termo de consentimento');
+  await failRate(key, 6, 60); // no máximo ~5 cadastros por hora por endereço
+  await withClinic(clinic, async () => {
+    ctx.user = null;
+    const s = await getSettings();
+    // já é paciente com este e-mail: não altera o cadastro, só manda o link (quem não tem o e-mail não consegue usar)
+    let p = await q.get('SELECT id, name, email FROM patients WHERE lower(email)=? ORDER BY id LIMIT 1', email);
+    if (!p) {
+      const r = await q.run(`INSERT INTO patients(name, birth_date, cpf, phone, email, status, notes) VALUES (?,?,?,?,?,'avaliacao',?)`,
+        name, birth, cpf, phone, email, 'Cadastro feito pelo próprio paciente pelo link de cadastro da clínica.');
+      p = { id: Number(r.lastInsertRowid), name, email };
+      await audit(ctx, 'paciente_se_cadastrou', 'patient', p.id, p.id, { pelo: 'link de cadastro' });
+      const staff = await q.all("SELECT name, email FROM users WHERE role='admin' AND active=1");
+      for (const u of staff) {
+        await notify.sendTemplate('portal_novo_cadastro', { to: u.email, clinicId: clinic.id, url: `${APP_URL}/#/pacientes/${p.id}`, ref: `pacsignup-${clinic.id}-${p.id}-${u.email}`,
+          vars: { nome: u.name, paciente: name, telefone: phone } }).catch(() => {});
+      }
+    }
+    if (!(await q.get('SELECT 1 FROM consents WHERE patient_id=? AND revoked_at IS NULL', p.id))) {
+      await q.run('INSERT INTO consents(patient_id, term_version, term_hash, method, signer_name, accepted_at, registered_by) VALUES (?,?,?,?,?,?,?)',
+        p.id, s.consent_version, sha(s.consent_text), 'aceite_online', name, today(), null);
+    }
+    try { await invitePatient(clinic, p); } catch (e) { console.warn('Cadastro do paciente: convite não enviado', e.message); }
+  });
+  return { ok: true, email };
+}, { public: true });
+
+// --- público: criar senha, entrar, sair, esqueci a senha ---
+async function pacToken(token) {
+  if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,60}$/.test(token)) throw new HttpError(404, 'Link inválido.');
+  const t = (await sql.unsafe(`SELECT t.*, a.clinic_id, a.patient_id, a.email FROM saas.patient_password_tokens t JOIN saas.patient_accounts a ON a.id=t.account_id
+    WHERE t.token_hash=$1`, [sha(token)]))[0];
+  if (!t || t.used_at || Number(t.expires_at) < Date.now()) throw new HttpError(404, 'Este link expirou ou já foi usado. Peça um novo na tela de entrada ("Esqueci minha senha").');
+  return t;
+}
+route('GET', '/api/public/portal-password/:token', async (ctx) => {
+  const key = `pacpw|${ctx.ip}`; await checkRate(key);
+  let t; try { t = await pacToken(ctx.params.token); } catch (e) { await failRate(key, 20, 30); throw e; }
+  const clinic = await getClinic(t.clinic_id);
+  return withClinic(clinic, async () => {
+    const p = await q.get('SELECT name FROM patients WHERE id=?', t.patient_id);
+    return { clinic: (await getSettings()).clinic_name || clinic.name, first_name: (p?.name || '').split(' ')[0], email: t.email };
+  });
+}, { public: true });
+route('POST', '/api/public/portal-password/:token', async (ctx) => {
+  const key = `pacpw|${ctx.ip}`; await checkRate(key);
+  const t = await pacToken(ctx.params.token);
+  validatePassword(ctx.body.password);
+  await sql.unsafe('UPDATE saas.patient_password_tokens SET used_at=$2 WHERE token_hash=$1', [t.token_hash, Date.now()]);
+  await sql.unsafe('UPDATE saas.patient_accounts SET password_hash=$2 WHERE id=$1', [t.account_id, hashPassword(ctx.body.password)]);
+  await sql.unsafe('DELETE FROM saas.patient_sessions WHERE account_id=$1', [t.account_id]); // troca de senha encerra outros acessos
+  await pacLogin(ctx, t.account_id);
+  return { ok: true };
+}, { public: true });
+route('POST', '/api/public/portal-login', async (ctx) => {
+  const email = normEmail(ctx.body.email); const pw = String(ctx.body.password || '');
+  const key = `paclogin|${ctx.ip}|${email}`; await checkRate(key);
+  const rows = EMAIL_RE.test(email) ? await sql.unsafe(`SELECT a.id, a.clinic_id, a.password_hash, c.name clinic FROM saas.patient_accounts a JOIN saas.clinics c ON c.id=a.clinic_id
+    WHERE lower(a.email)=$1 AND a.password_hash IS NOT NULL`, [email]) : [];
+  const ok = rows.filter((r) => checkPassword(pw, r.password_hash));
+  if (!rows.length) checkPassword(pw, DUMMY_HASH);
+  const usable = [];
+  for (const r of ok) { const c = await getClinic(r.clinic_id); if (c && clinicAccess(c).mode !== 'blocked') usable.push(r); }
+  if (!usable.length) { await failRate(key, 8, 15); throw new HttpError(401, 'E-mail ou senha incorretos.'); }
+  await clearRate(key);
+  const pick = usable.length === 1 ? usable[0] : usable.find((r) => r.id === Number(ctx.body.account_id));
+  if (!pick) return { choose: usable.map((r) => ({ id: r.id, clinic: r.clinic })) }; // mesmo e-mail em mais de uma clínica
+  await pacLogin(ctx, pick.id);
+  return { ok: true };
+}, { public: true });
+route('POST', '/api/public/portal-logout', async (ctx) => {
+  const token = parseCookies(ctx.req).fisio_pac;
+  if (token) await sql.unsafe('DELETE FROM saas.patient_sessions WHERE token_hash=$1', [sha(token)]);
+  pacCookie(ctx.res, '', 0);
+  return { ok: true };
+}, { public: true });
+route('POST', '/api/public/portal-forgot', async (ctx) => {
+  const key = `pacforgot|${ctx.ip}`; await checkRate(key);
+  const email = normEmail(ctx.body.email);
+  if (!EMAIL_RE.test(email)) throw new HttpError(400, 'Informe um e-mail válido');
+  await failRate(key, 6, 30);
+  const rows = await sql.unsafe('SELECT clinic_id, patient_id FROM saas.patient_accounts WHERE lower(email)=$1', [email]);
+  for (const r of rows) {
+    const clinic = await getClinic(r.clinic_id);
+    if (!clinic || clinicAccess(clinic).mode === 'blocked') continue;
+    await withClinic(clinic, async () => {
+      const p = await q.get('SELECT id, name, email FROM patients WHERE id=?', r.patient_id);
+      if (p && normEmail(p.email) === email) await invitePatient(clinic, p, { reset: true }).catch((e) => console.warn('Portal: link de senha não enviado', e.message));
+    });
+  }
+  return { ok: true, message: 'Se houver um cadastro com este e-mail, enviamos um link para criar uma nova senha. O link vale por 48 horas.' };
+}, { public: true });
+
 // ---- lado do paciente (público, pelo link) ----
 route('GET', '/api/portal/:token', async (ctx) => inPortal(ctx, async ({ link, clinic, p }) => {
-  await currentSql().unsafe('UPDATE saas.portal_links SET last_used_at=now() WHERE token_hash=$1', [link.token_hash]);
+  if (link.token_hash) await currentSql().unsafe('UPDATE saas.portal_links SET last_used_at=now() WHERE token_hash=$1', [link.token_hash]);
   const s = await getSettings();
   const now = nowLocal();
   const appts = await q.all(`SELECT a.id, a.start, a.duration, a.kind, a.status, u.name professional FROM appointments a LEFT JOIN users u ON u.id=a.professional_id
@@ -1978,7 +2187,7 @@ route('GET', '/api/portal/:token', async (ctx) => inPortal(ctx, async ({ link, c
   const diary = (await q.all('SELECT * FROM pain_diary WHERE patient_id=? ORDER BY day DESC LIMIT 60', p.id)).map(diaryView);
   return {
     clinic: { name: s.clinic_name || clinic.name, phone: s.phone || '', email: s.email || '', address: s.address || '' },
-    patient: { first_name: p.name.split(' ')[0] }, today: today(),
+    patient: { first_name: p.name.split(' ')[0] }, today: today(), logged_in: !!link.account,
     appointments: appts.map((a) => ({ ...a, kind: KIND_PT[a.kind] || a.kind, can_confirm: a.status === 'agendado' && a.start > now })),
     pending, paid, signatures: sigs, programs, diary,
   };

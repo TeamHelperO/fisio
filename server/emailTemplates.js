@@ -110,6 +110,22 @@ const DEFAULTS = {
     body: 'Olá, {{nome}}!\n\nA {{clinica}} criou um link pessoal para você acompanhar pelo celular: suas próximas consultas (com confirmação de presença), seus exercícios, pagamentos, documentos para assinar e um diário para registrar como está sua dor.\n\nO link vale por {{validade}}. Ele é pessoal: não compartilhe com outras pessoas.',
     button: 'Abrir meu acompanhamento',
   },
+  portal_criar_senha: {
+    group: 'Portal do paciente', name: 'Criar ou trocar a senha do portal (para o paciente)',
+    when: 'Enviado quando o paciente se cadastra pelo link da clínica, quando a clínica o convida (ou o cadastra com o convite automático ligado) e quando ele pede "Esqueci minha senha".',
+    vars: { nome: 'Primeiro nome do paciente', clinica: 'Nome da clínica', validade: 'Validade do link', acao: '"criar a sua senha" ou "trocar a sua senha"' }, link: true,
+    subject: 'Seu acesso ao portal da {{clinica}}',
+    body: 'Olá, {{nome}}!\n\nUse o botão abaixo para {{acao}} no portal do paciente da {{clinica}}. Lá você acompanha suas consultas (e confirma presença), seus exercícios, pagamentos e documentos.\n\nO link vale por {{validade}} e só pode ser usado uma vez. Se você não pediu este acesso, ignore este e-mail.',
+    button: 'Criar minha senha',
+  },
+  portal_novo_cadastro: {
+    group: 'Portal do paciente', optional: true, name: 'Novo cadastro pelo link (para a clínica)',
+    when: 'Enviado aos administradores da clínica quando um paciente novo se cadastra pelo link de cadastro.',
+    vars: { nome: 'Nome de quem recebe o aviso', paciente: 'Nome do paciente', telefone: 'Telefone informado' }, link: true,
+    subject: 'Novo paciente cadastrado pelo link: {{paciente}}',
+    body: 'Olá, {{nome}}!\n\n{{paciente}} ({{telefone}}) acabou de se cadastrar pelo link de cadastro da clínica e aceitou o termo de consentimento. O cadastro já está na lista de pacientes, na situação "Avaliação".',
+    button: 'Abrir o cadastro',
+  },
   pagamento_link: {
     group: 'Pagamentos pelo app', optional: true, name: 'Link de pagamento (para o paciente)',
     when: 'Enviado ao paciente quando a clínica manda o link do Mercado Pago por e-mail.',

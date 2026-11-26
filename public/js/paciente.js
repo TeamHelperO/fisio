@@ -1,15 +1,25 @@
-// Portal do paciente: /paciente/<código>. Consultas, pagamentos, documentos, exercícios e diário de dor.
+// Portal do paciente. /paciente (entrar com e-mail e senha), /paciente/<código> (link pessoal),
+// /paciente/cadastro/<código da clínica> (cadastro) e /paciente/senha/<código> (criar senha).
+// Consultas, pagamentos, documentos, exercícios e diário de dor.
 import { h, icon, toast } from './ui.js';
 
 const root = document.getElementById('root');
-const token = decodeURIComponent(location.pathname.split('/').filter(Boolean)[1] || '');
+const show = (...els) => root.replaceChildren(...els.flat().filter(Boolean));
+let parts = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+let token = parts[1] || '';
+const pub = async (path, body) => {
+  const res = await fetch(`/api/public/${path}`, { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fisio' }, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || 'Não foi possível concluir. Tente novamente.'), { status: res.status });
+  return data;
+};
 const api = async (path = '', body) => {
   const res = await fetch(`/api/portal/${encodeURIComponent(token)}${path}`, {
-    method: body ? 'POST' : 'GET', credentials: 'omit',
+    method: body ? 'POST' : 'GET', credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fisio' }, body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Não foi possível carregar. Tente novamente.');
+  if (!res.ok) throw Object.assign(new Error(data.error || 'Não foi possível carregar. Tente novamente.'), { status: res.status });
   return data;
 };
 const WD = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
@@ -23,14 +33,101 @@ const PAIN_COLOR = (n) => (n <= 3 ? '#16a34a' : n <= 6 ? '#d97706' : '#dc2626');
 const isImage = (u) => /\.(gif|png|jpe?g|webp)(\?|$)/i.test(u || '');
 
 function fail(msg) {
-  root.replaceChildren(h('div', { class: 'bk-card bk-done' }, h('div', { class: 'bk-logo' }, icon('alert', 26)),
+  show(h('div', { class: 'bk-card bk-done' }, h('div', { class: 'bk-logo' }, icon('alert', 26)),
     h('h1', { style: { fontSize: '20px', margin: '0 0 8px' } }, 'Link indisponível'), h('p', { class: 'bk-empty' }, msg)));
 }
 
+const field = (label, input, help) => h('label', { class: 'field' }, h('span', null, label), input, help ? h('small', { class: 'help' }, help) : null);
+const card = (...c) => h('section', { class: 'bk-card' }, ...c);
+const headBox = (title, sub) => h('div', { class: 'bk-head' }, h('div', { class: 'bk-logo' }, icon('activity', 24)), h('div', null, h('h1', null, title), sub ? h('p', null, sub) : null));
+const done = (title, text) => show(h('div', { class: 'bk-card bk-done' }, h('div', { class: 'bk-logo' }, icon('check', 26)),
+  h('h1', { style: { fontSize: '20px', margin: '0 0 8px' } }, title), h('p', { class: 'bk-empty' }, text)));
+
+function loginScreen(msg) {
+  history.replaceState(null, '', '/paciente'); parts = ['paciente'];
+  const email = h('input', { class: 'input', type: 'email', autocomplete: 'email', required: true });
+  const pass = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', required: true });
+  const btn = h('button', { class: 'btn primary', type: 'submit', style: { width: '100%', padding: '12px' } }, 'Entrar');
+  const choose = h('div');
+  const submit = async (accountId) => {
+    btn.disabled = true;
+    try {
+      const r = await pub('portal-login', { email: email.value, password: pass.value, account_id: accountId });
+      if (r.choose) {
+        choose.replaceChildren(h('p', { class: 'pt-sub' }, 'Você tem cadastro em mais de uma clínica. Qual quer abrir?'),
+          h('div', { class: 'pt-list' }, r.choose.map((c) => h('button', { type: 'button', class: 'btn', onclick: () => submit(c.id) }, c.clinic))));
+        btn.disabled = false; return;
+      }
+      token = 'eu'; main();
+    } catch (e) { toast(e.message, 'error'); btn.disabled = false; }
+  };
+  show(headBox('Portal do paciente', 'Entre para ver suas consultas, exercícios e pagamentos'),
+    msg ? h('div', { class: 'notice info', style: { marginBottom: '12px' } }, icon('check'), h('span', null, msg)) : null,
+    card(h('form', { class: 'stack', onsubmit: (e) => { e.preventDefault(); submit(); } },
+      field('E-mail', email), field('Senha', pass), btn, choose,
+      h('a', { href: '#', style: { textAlign: 'center', fontSize: '14px' }, onclick: (e) => { e.preventDefault(); forgotScreen(email.value); } }, 'Esqueci minha senha / primeiro acesso'))),
+    h('p', { class: 'bk-foot' }, 'Ainda não tem cadastro? Peça à sua clínica o link de cadastro.'));
+}
+function forgotScreen(prefill = '') {
+  const email = h('input', { class: 'input', type: 'email', autocomplete: 'email', required: true, value: prefill });
+  const btn = h('button', { class: 'btn primary', type: 'submit', style: { width: '100%', padding: '12px' } }, 'Enviar link');
+  show(headBox('Criar ou trocar a senha', 'Enviamos um link para o e-mail cadastrado na clínica'),
+    card(h('form', { class: 'stack', onsubmit: async (e) => {
+      e.preventDefault(); btn.disabled = true;
+      try { const r = await pub('portal-forgot', { email: email.value }); done('Confira seu e-mail', r.message); } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+    } }, field('E-mail', email), btn,
+    h('a', { href: '#', style: { textAlign: 'center', fontSize: '14px' }, onclick: (e) => { e.preventDefault(); loginScreen(); } }, '← Voltar para entrar'))));
+}
+async function passwordScreen(code) {
+  let info;
+  try { info = await pub(`portal-password/${encodeURIComponent(code)}`); } catch (e) { return fail(e.message); }
+  const p1 = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minLength: 8, required: true });
+  const p2 = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minLength: 8, required: true });
+  const btn = h('button', { class: 'btn primary', type: 'submit', style: { width: '100%', padding: '12px' } }, 'Salvar senha e entrar');
+  show(headBox(`Olá, ${info.first_name}!`, `Crie sua senha do portal da ${info.clinic}`),
+    card(h('form', { class: 'stack', onsubmit: async (e) => {
+      e.preventDefault();
+      if (p1.value !== p2.value) return toast('As senhas não são iguais', 'error');
+      btn.disabled = true;
+      try { await pub(`portal-password/${encodeURIComponent(code)}`, { password: p1.value }); history.replaceState(null, '', '/paciente'); parts = ['paciente']; token = 'eu'; main(); }
+      catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+    } }, h('div', { class: 'bk-summary' }, 'Seu e-mail de acesso: ', h('b', null, info.email)),
+    field('Nova senha', p1, 'Pelo menos 8 caracteres, com letras e números.'), field('Repita a senha', p2), btn)));
+}
+async function signupScreen(code) {
+  let info;
+  try { info = await pub(`portal-signup/${encodeURIComponent(code)}`); } catch (e) { return fail(e.message); }
+  document.title = `Cadastro — ${info.clinic}`;
+  const inp = (attrs) => h('input', { class: 'input', ...attrs });
+  const f = { name: inp({ autocomplete: 'name', required: true, maxLength: 160 }), birth_date: inp({ type: 'date' }), cpf: inp({ inputmode: 'numeric', maxLength: 14, placeholder: 'opcional' }),
+    phone: inp({ type: 'tel', autocomplete: 'tel', required: true, placeholder: '(11) 99999-9999' }), email: inp({ type: 'email', autocomplete: 'email', required: true }) };
+  const hp = h('input', { name: 'website', tabIndex: -1, autocomplete: 'off' });
+  const agree = h('input', { type: 'checkbox' });
+  const btn = h('button', { class: 'btn primary', type: 'submit', style: { width: '100%', padding: '12px' } }, 'Cadastrar');
+  show(headBox(info.clinic, 'Cadastro de paciente'),
+    card(h('form', { class: 'stack', onsubmit: async (e) => {
+      e.preventDefault();
+      if (!agree.checked) return toast('Leia e aceite o termo de consentimento', 'error');
+      btn.disabled = true;
+      try {
+        const r = await pub(`portal-signup/${encodeURIComponent(code)}`, { ...Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v.value])), consent: true, website: hp.value });
+        done('Cadastro recebido!', `Enviamos um e-mail para ${r.email} com o link para criar sua senha do portal. Confira também a caixa de spam.`);
+      } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+    } },
+    field('Nome completo', f.name), field('Data de nascimento', f.birth_date), field('CPF', f.cpf), field('Telefone / WhatsApp', f.phone), field('E-mail', f.email, 'Você vai receber neste e-mail o link para criar sua senha.'),
+    h('div', { class: 'bk-hp', 'aria-hidden': 'true' }, hp),
+    h('details', { class: 'pt-details' }, h('summary', null, `Ler o termo de consentimento (LGPD, v${info.consent_version})`),
+      h('div', { style: { whiteSpace: 'pre-line', fontSize: '13px', maxHeight: '260px', overflow: 'auto', border: '1px solid var(--border)', borderRadius: '8px', padding: '10px' } }, info.consent_text)),
+    h('label', { class: 'bk-consent' }, agree, h('span', null, 'Li e aceito o termo de consentimento para o tratamento dos meus dados pessoais e de saúde pela clínica.')),
+    btn)));
+}
+
 async function main() {
-  if (!token) return fail('Abra o link exatamente como foi enviado pela clínica.');
+  if (parts[1] === 'cadastro') return signupScreen(parts[2] || '');
+  if (parts[1] === 'senha') return passwordScreen(parts[2] || '');
+  if (!token || token === 'entrar') token = 'eu';
   let d;
-  try { d = await api(); } catch (e) { return fail(e.message); }
+  try { d = await api(); } catch (e) { return token === 'eu' && e.status === 401 ? loginScreen() : fail(e.message); }
   document.title = `${d.clinic.name} — Meu acompanhamento`;
   const reload = () => main();
   const phone = onlyDigits(d.clinic.phone);
@@ -106,7 +203,7 @@ async function main() {
         it.media_url && !isImage(it.media_url) ? h('a', { class: 'btn sm', href: it.media_url, target: '_blank', rel: 'noopener noreferrer' }, 'Ver vídeo') : null)))),
     h('p', { class: 'pt-sub', style: { marginTop: '10px' } }, 'Faça com calma. Se sentir dor forte, tontura, falta de ar ou formigamento, pare e avise seu fisioterapeuta.')));
 
-  root.replaceChildren(
+  show(
     h('div', { class: 'bk-head' }, h('div', { class: 'bk-logo' }, icon('activity', 24)), h('div', null, h('h1', null, `Olá, ${d.patient.first_name}!`), h('p', null, d.clinic.name))),
     section('Como está sua dor hoje?', 'trending',
       h('p', { class: 'pt-sub', style: { marginTop: '-6px' } }, '0 = sem dor · 10 = pior dor imaginável'),
@@ -121,6 +218,7 @@ async function main() {
       h('div', null, h('b', null, d.clinic.name)),
       d.clinic.phone ? h('div', null, wa('Olá!') ? h('a', { href: wa('Olá!'), target: '_blank', rel: 'noopener noreferrer' }, `WhatsApp ${d.clinic.phone}`) : d.clinic.phone) : null,
       d.clinic.address ? h('div', null, d.clinic.address) : null,
-      h('p', { style: { marginTop: '10px' } }, 'Este link é pessoal: não compartilhe. Para desativá-lo, fale com a clínica.')));
+      d.logged_in ? h('p', { style: { marginTop: '10px' } }, h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await pub('portal-logout', {}); token = 'eu'; loginScreen('Você saiu do portal.'); } }, 'Sair do portal'))
+        : h('p', { style: { marginTop: '10px' } }, 'Este link é pessoal: não compartilhe. Para desativá-lo, fale com a clínica.')));
 }
 main();
