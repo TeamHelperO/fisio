@@ -3,18 +3,19 @@ import { get, post, put, qs } from '../api.js';
 import { state, isAdmin, reloadSettings } from '../state.js';
 import { recebimentosTab } from './paylink.js';
 import { portalSettingsTab } from './portal.js';
+import { whatsappTab } from './whatsapp.js';
 
 
 const refresh = () => dispatchEvent(new Event('fisio:refresh'));
 
 export async function settingsPage(view, [tab], query) {
-  const tabs = [['perfil', 'Profissional e clínica', true], ['usuarios', 'Usuários e acesso', true], ['seguranca', 'Minha conta'], ['lgpd', 'LGPD', true], ['agendamento', 'Agendamento online', true], ['recebimentos', 'Recebimentos', true], ['portal', 'Portal do paciente', true], ['assinatura', 'Assinatura e dados', true], ['auditoria', 'Registro de alterações', true]]
+  const tabs = [['perfil', 'Profissional e clínica', true], ['usuarios', 'Usuários e acesso', true], ['seguranca', 'Minha conta'], ['lgpd', 'LGPD', true], ['agendamento', 'Agendamento online', true], ['recebimentos', 'Recebimentos', true], ['portal', 'Portal do paciente', true], ['whatsapp', 'WhatsApp', true], ['assinatura', 'Assinatura e dados', true], ['auditoria', 'Registro de alterações', true]]
     .filter((t) => !t[2] || isAdmin());
   tab = tab || tabs[0][0];
   const body = h('div');
   view.append(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Configurações'), h('p', null, 'Dados do profissional, usuários, segurança, privacidade e assinatura.'))),
     h('nav', { class: 'tabs' }, tabs.map(([k, l]) => h('a', { href: `#/configuracoes/${k}`, class: k === tab ? 'on' : '' }, l))), body);
-  const T = { perfil, usuarios, seguranca, lgpd, agendamento: agendamentoOnline, recebimentos: recebimentosTab, portal: portalSettingsTab, assinatura, auditoria };
+  const T = { perfil, usuarios, seguranca, lgpd, agendamento: agendamentoOnline, recebimentos: recebimentosTab, portal: portalSettingsTab, whatsapp: whatsappTab, assinatura, auditoria };
   if (!tabs.find((t) => t[0] === tab)) return body.append(h('div', { class: 'notice' }, icon('shield'), 'Acesso restrito ao administrador.'));
   await T[tab](body, query);
 }

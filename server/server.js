@@ -9,7 +9,7 @@ const fs = require('fs');
 const envFile = path.join(__dirname, '..', '.env');
 if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
 
-const { handler, housekeeping } = require('./app');
+const { handler, housekeeping, sendReminders } = require('./app');
 const { serveStatic, send } = require('./http');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -29,6 +29,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 setInterval(() => housekeeping().catch((e) => console.error('Limpeza', e.message)), 3600e3).unref();
+// lembretes do WhatsApp a cada 5 minutos (em produção, um agendador externo chama /api/cron/whatsapp)
+setInterval(() => sendReminders().catch((e) => console.error('Lembretes WhatsApp', e.message)), Number(process.env.REMINDER_INTERVAL_MS) || 300e3).unref();
 
 server.listen(PORT, HOST, () => {
   console.log(`\n  FisioGestão rodando em http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}\n`);

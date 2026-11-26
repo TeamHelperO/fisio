@@ -2499,6 +2499,15 @@ route('POST', '/api/mp/recebimentos/webhook/:clinicId', async (ctx) => {
   return { received: true };
 }, { public: true, webhook: true, raw: true });
 
+// ====================== WhatsApp (Evolution API): lembretes e confirmação ======================
+const whatsapp = require('./whatsapp')({ route, requireRole, audit, clinicAccess, APP_URL, sha, checkRate, failRate });
+// lembretes de consulta: chamado a cada poucos minutos por um agendador externo (ou pelo servidor local)
+route('GET', '/api/cron/whatsapp', async (ctx) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || ctx.req.headers.authorization !== `Bearer ${secret}`) throw new HttpError(401, 'Não autorizado');
+  return whatsapp.sweep();
+}, { public: true });
+
 // ====================== Área administrativa da plataforma ======================
 const adminArea = require('./admin')({ hashPassword, checkPassword, validatePassword, sha, DUMMY_HASH, checkRate, failRate, clearRate, clinicAccess, unsubscribeUrl, COOKIE_SECURE, runDaily: () => lifecycle.daily() });
 
@@ -2600,4 +2609,5 @@ route('GET', '/api/cron/housekeeping', async (ctx) => {
   return { ok: true };
 }, { public: true });
 
-module.exports = { handler, housekeeping };
+const sendReminders = () => whatsapp.sweep();
+module.exports = { handler, housekeeping, sendReminders };

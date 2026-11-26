@@ -14,6 +14,8 @@ const FIELDS = {
   MP_CLIENT_ID: { group: 'Recebimentos das clínicas (Mercado Pago)', label: 'Client ID da aplicação (para as clínicas conectarem a conta)', pattern: /^\d{4,30}$/ },
   MP_CLIENT_SECRET: { group: 'Recebimentos das clínicas (Mercado Pago)', label: 'Client Secret da aplicação', secret: true, pattern: /^[A-Za-z0-9_-]{16,128}$/ },
   MP_PLATFORM_FEE: { group: 'Recebimentos das clínicas (Mercado Pago)', label: 'Taxa da plataforma sobre cada pagamento recebido pelo app, em % (0 = sem taxa)', pattern: /^\d{1,2}([.,]\d{1,2})?$/ },
+  EVOLUTION_URL: { group: 'WhatsApp (Evolution API)', label: 'Endereço do servidor da Evolution API (ex.: https://evolution.seudominio.com.br)', pattern: /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/ },
+  EVOLUTION_API_KEY: { group: 'WhatsApp (Evolution API)', label: 'Chave global da API (AUTHENTICATION_API_KEY)', secret: true, pattern: /^\S{8,200}$/ },
   EMAIL_FROM: { group: 'E-mail', label: 'Remetente (ex.: FisioGestão <contato@seudominio.com.br>)', pattern: /^([^\r\n<>]{0,100}<[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>|[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+)$/ },
   SMTP_HOST: { group: 'E-mail (SMTP)', label: 'Servidor SMTP (ex.: smtp.gmail.com, smtp.office365.com)', pattern: /^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/ },
   SMTP_PORT: { group: 'E-mail (SMTP)', label: 'Porta (587 para STARTTLS, 465 para SSL)', pattern: /^([1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$/ },
